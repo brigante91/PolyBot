@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polymarket-bot"
+version = "0.1.0"
+description = "Polymarket research bot: paper trading, backtesting, risk management"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "tenacity>=8.2.0",
+    "pandas>=2.0",
+    "numpy>=1.26",
+    "structlog>=24.0",
+    "typer>=0.12.0",
+    "rich>=13.0",
+    "textual>=0.47.0",
+    "websockets>=12.0",
+    "py-clob-client>=0.34.0",
+]
+
+[project.scripts]
+polybot = "app.cli:main"
+polybot-tui = "app.ui.tui_app:run_tui"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.14",
+    "respx>=0.21",
+]
+
+[tool.setuptools.packages.find]
+where = ["polymarket_bot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["polymarket_bot"]
