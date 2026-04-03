@@ -33,8 +33,9 @@ class QuoteEngine:
 
     def prepare_intent(self, intent: OrderIntent, *, edge_net: float) -> OrderIntent | None:
         """Tier-adjust limit price; return None if edge too low to quote (maker-first)."""
-        if edge_net < 0.01:
-            log.info("quote_skipped_low_edge", edge_net=edge_net)
+        min_e = float(self._settings.min_net_edge)
+        if edge_net < min_e or edge_net <= 0.0:
+            log.info("quote_skipped_low_edge", edge_net=edge_net, min_net_edge=min_e)
             return None
         adj = 0.0
         if edge_net > 0.05:

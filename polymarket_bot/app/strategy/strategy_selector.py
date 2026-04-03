@@ -20,6 +20,8 @@ from app.strategy.passive_mm import PassiveMarketMakingStrategy
 class SelectionResult:
     strategy_id: str
     confidence: float
+    """Strategy score (0–1). Final executable action comes from the trade gate."""
+    strategy_score: float
     action: OperationalAction
     rationale: str
     second_best_id: str | None = None
@@ -58,6 +60,7 @@ class StrategySelector:
             return SelectionResult(
                 strategy_id="no_trade",
                 confidence=0.0,
+                strategy_score=0.0,
                 action=OperationalAction.NO_TRADE,
                 rationale="no_strategy_passed_threshold",
                 explain_rejected=rejected[:12],
@@ -71,13 +74,18 @@ class StrategySelector:
             second_id = scored[1][0].name
             second_sc = scored[1][1]
 
-        action = OperationalAction.ENTER_LIMIT_BUY
-        if best.name == "passive_market_making":
-            action = OperationalAction.PASSIVE_QUOTE
+        sc = min(1.0, float(best_score))
+        # Default executable action is NO_TRADE; trade_gate authorizes BUY/SELL/QUOTE.
+        action = (
+            OperationalAction.PASSIVE_QUOTE
+            if best.name == "passive_market_making"
+            else OperationalAction.NO_TRADE
+        )
 
         return SelectionResult(
             strategy_id=best.name,
-            confidence=min(1.0, best_score),
+            confidence=sc,
+            strategy_score=sc,
             action=action,
             rationale=f"selected_{best.name}",
             second_best_id=second_id,

@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from app.models.order import OrderSide
 from app.utils.math_utils import bps_to_fraction
 
 
@@ -38,11 +39,37 @@ class FairValueInputs:
 
 @dataclass
 class FairValueResult:
+    """
+    fair_prob / market_prob: model vs mid-implied probability for the YES token.
+    edge: signed gross edge for a long-YES view (fair - market_mid).
+    edge_net: long-YES net edge after fee/slippage buffer.
+    Use directional_edge_* when evaluating SELL YES (short) intents.
+    """
+
     fair_prob: float
     market_prob: float
     edge: float
     edge_net: float
     confidence: float
+
+    @property
+    def edge_gross(self) -> float:
+        """Signed gross mispricing vs mid (same as ``edge``)."""
+        return self.edge
+
+    @property
+    def estimated_cost(self) -> float:
+        """Fee + slippage fraction implied by gross minus net (long-YES)."""
+        return max(0.0, self.edge - self.edge_net)
+
+    def directional_edge_gross(self, side: OrderSide) -> float:
+        """Gross edge in the direction of ``side`` (YES token)."""
+        e = float(self.fair_prob - self.market_prob)
+        return e if side == OrderSide.BUY else -e
+
+    def directional_edge_net(self, side: OrderSide) -> float:
+        """Net edge after friction, in the direction of ``side``."""
+        return self.directional_edge_gross(side) - self.estimated_cost
 
 
 class FairValueEngine:

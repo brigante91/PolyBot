@@ -14,8 +14,15 @@ class MetricsPanel(Static):
             return "[bold]METRICS[/bold]\n—"
         ps = m.get("pnl_by_strategy") or {}
         pm = m.get("pnl_by_market") or {}
+        ntr = m.get("no_trade_reasons") or {}
+        ntr_s = ""
+        if isinstance(ntr, dict) and ntr:
+            ntr_s = " | ".join(f"{k}:{int(v)}" for k, v in list(ntr.items())[:8])
         lines = [
             "[bold]METRICS[/bold]",
+            f"strat_sel {int(m.get('markets_strategy_selected',0))}  allow {int(m.get('markets_trade_allowed',0))}  gate_nt {int(m.get('markets_no_trade_gate',0))}",
+            f"edge_avg_ok {m.get('edge_avg_allowed')}  edge_avg_drop {m.get('edge_avg_rejected')}",
+            f"no_trade_reasons: {ntr_s or '—'}",
             f"edge_in_avg {m.get('edge_in_avg')}  edge_real {m.get('edge_realized_avg')}",
             f"fill_rate {m.get('fill_rate')}  cancel_ratio {m.get('cancel_ratio')}",
             f"maker/taker {m.get('maker_taker_ratio')}  no_trade {m.get('no_trade_ratio')}",

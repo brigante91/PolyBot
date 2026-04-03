@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     strategy_loss_limit_usd: float = Field(default=30.0, alias="STRATEGY_LOSS_LIMIT_USD")
     orchestrator_interval_seconds: float = Field(default=45.0, alias="ORCHESTRATOR_INTERVAL_SECONDS")
 
+    # Trade authorization gate (env-overridable; logged at startup)
+    min_gross_edge: float = Field(default=0.0025, alias="MIN_GROSS_EDGE")
+    min_net_edge: float = Field(default=0.0010, alias="MIN_NET_EDGE")
+    min_trade_confidence: float = Field(default=0.55, alias="MIN_CONFIDENCE")
+    min_execution_quality: float = Field(default=0.60, alias="MIN_EXECUTION_QUALITY")
+    trade_gate_max_spread_bps: float = Field(default=80.0, alias="TRADE_GATE_MAX_SPREAD_BPS")
+    min_depth_usd_trade: float = Field(default=25.0, alias="MIN_DEPTH_USD")
+
     # WebSocket (V3) — market data without polling for critical path when enabled
     enable_ws: bool = Field(default=False, alias="ENABLE_WS")
     ws_market_url: str = Field(

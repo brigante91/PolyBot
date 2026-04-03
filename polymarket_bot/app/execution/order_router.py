@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from app.config import RunMode, Settings
 from app.logger import get_logger
+from app.models.decision import OperationalAction
 from app.models.order import OrderIntent
 from app.models.orderbook import OrderBookSnapshot
 from app.services.execution_service import ExecutionResult, ExecutionService
@@ -24,6 +25,8 @@ class RoutedIntent:
     edge_net: float | None = None
     passive_quote: bool = False
     group_key: str = "OTHER"
+    trade_allowed: bool = True
+    recommended_action: OperationalAction = OperationalAction.NO_TRADE
 
 
 class OrderRouter:
@@ -44,6 +47,12 @@ class OrderRouter:
         out: list[tuple[RoutedIntent, ExecutionResult]] = []
         seen: set[tuple[str, str]] = set()
         for ri in items_sorted:
+            if not ri.trade_allowed:
+                log.warning("router_skip_not_authorized", market_id=ri.market_id)
+                continue
+            if ri.recommended_action == OperationalAction.NO_TRADE:
+                log.warning("router_skip_no_trade", market_id=ri.market_id)
+                continue
             key = (ri.intent.market_id, ri.intent.token_id)
             if key in seen:
                 log.info("router_skip_duplicate_market", market_id=ri.market_id)

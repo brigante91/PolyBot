@@ -12,6 +12,8 @@ from app.analysis.market_scorer import MarketScorer
 from app.clients.polymarket_rest import PolymarketRestFacade
 from app.clients.spot_price_client import SpotPriceClient
 from app.config import RunMode, Settings
+from app.decision import evaluate_trade_gate
+from app.decision.trade_gate import NoTradeReason
 from app.data.market_store import MarketStateStore
 from app.discovery.market_filter import MarketFilter
 from app.discovery.market_universe import MarketUniverseScanner
@@ -28,7 +30,6 @@ from app.logger import get_logger
 from app.models.candidate import CandidateMarket
 from app.models.context import MarketContext
 from app.models.decision import MarketDecisionRecord, OperationalAction
-from app.models.order import OrderSide
 from app.monitor.metrics import OrchestratorMetrics
 from app.paper.paper_broker import PaperBroker
 from app.portfolio.exposure_allocator import ExposureAllocator
@@ -101,6 +102,15 @@ class MultiMarketOrchestrator:
         self._fve = FairValueEngine(fee_bps=settings.paper_fee_bps, slippage_bps=settings.paper_slippage_bps)
         self._spot = SpotPriceClient(settings)
         self._spot_cache: dict[str, tuple[float, float]] = {}
+        log.info(
+            "trade_gate_settings",
+            min_gross_edge=settings.min_gross_edge,
+            min_net_edge=settings.min_net_edge,
+            min_confidence=settings.min_trade_confidence,
+            min_execution_quality=settings.min_execution_quality,
+            trade_gate_max_spread_bps=settings.trade_gate_max_spread_bps,
+            min_depth_usd_trade=settings.min_depth_usd_trade,
+        )
 
     def close(self) -> None:
         if self._v3 is not None:
@@ -180,6 +190,13 @@ class MultiMarketOrchestrator:
             enriched.append(ctx.model_copy(update={"fair_value": fv}))
         contexts = enriched
 
+        ks = KillSwitch(self.settings).is_active()
+        user_ws_degraded = bool(
+            self._rt_state
+            and mode == RunMode.LIVE
+            and self._rt_state.is_user_feed_degraded(self.settings)
+        )
+
         tui_markets: list[dict[str, Any]] = []
         decision_trace: list[dict[str, Any]] = []
         for ctx in contexts[:18]:
@@ -189,36 +206,70 @@ class MultiMarketOrchestrator:
             tid = ctx.candidate.primary_token_id() or ""
             stale = bool(self._rt_state.is_stale(tid)) if self._rt_state and tid else False
             blocked = not scores_row.get("recommended", False)
+            intent = (
+                self.selector.build_intent(ctx, sel.strategy_id)
+                if sel.strategy_id != "no_trade"
+                else None
+            )
+            gate = evaluate_trade_gate(
+                self.settings,
+                ctx,
+                fv,
+                sel,
+                intent,
+                is_stale=stale,
+                feed_degraded=user_ws_degraded,
+            )
+            eg = gate.edge_net
             row = {
                 "id": ctx.candidate.market_id,
                 "score": round(ctx.score_total, 3),
                 "strategy": sel.strategy_id,
                 "confidence": round(sel.confidence, 3),
                 "second_strategy": sel.second_best_id or "—",
-                "edge": round(fv.edge_net, 4) if fv else 0.0,
-                "fair": round(fv.fair_prob, 3) if fv else 0.0,
-                "mkt": round(fv.market_prob, 3) if fv else 0.0,
+                "edge_gross": round(gate.edge_gross, 6) if gate.edge_gross is not None else None,
+                "edge": round(eg, 6) if eg is not None else None,
+                "edge_net": round(eg, 6) if eg is not None else None,
+                "fair": round(gate.fair_prob, 6) if gate.fair_prob is not None else None,
+                "mkt": round(gate.market_prob, 6) if gate.market_prob is not None else None,
+                "threshold_net": gate.threshold_net,
+                "trade_allowed": gate.trade_allowed,
+                "action": gate.recommended_action.value,
+                "reason": gate.reason,
                 "explain": (sel.explain_selected or "")[:100],
                 "tradable": bool(scores_row.get("recommended", False)),
                 "token_id": tid[:14],
                 "stale": stale,
                 "blocked": blocked,
+                "row_tier": (
+                    "green"
+                    if gate.trade_allowed
+                    else ("yellow" if sel.strategy_id != "no_trade" else "red")
+                ),
             }
+            if stale or gate.reason in ("feed_degraded", "market_stale"):
+                row["row_tier"] = "red"
             tui_markets.append(row)
             decision_trace.append(
                 {
                     "market_id": ctx.candidate.market_id[:14],
                     "strategy": sel.strategy_id,
                     "second": sel.second_best_id or "—",
-                    "conf": round(sel.confidence, 3),
-                    "edge_net": round(fv.edge_net, 4) if fv else None,
-                    "fair": round(fv.fair_prob, 3) if fv else None,
-                    "mkt": round(fv.market_prob, 3) if fv else None,
-                    "action": sel.action.value,
+                    "conf": round(sel.confidence, 6),
+                    "edge_net": round(eg, 6) if eg is not None else None,
+                    "edge_gross": round(gate.edge_gross, 6) if gate.edge_gross is not None else None,
+                    "fair": round(gate.fair_prob, 6) if gate.fair_prob is not None else None,
+                    "mkt": round(gate.market_prob, 6) if gate.market_prob is not None else None,
+                    "threshold_net": gate.threshold_net,
+                    "trade_allowed": gate.trade_allowed,
+                    "action": gate.recommended_action.value,
+                    "final_reason": gate.reason,
                     "explain": (sel.explain_selected or "")[:90],
                     "scorer_ok": bool(scores_row.get("recommended", False)),
                     "rationale": (sel.rationale or "")[:100],
                     "risk_gate": "ok",
+                    "risk_passed": True,
+                    "execution_passed": gate.execution_passed,
                 }
             )
         lat = "—"
@@ -240,12 +291,6 @@ class MultiMarketOrchestrator:
             "max_open_orders": self.settings.max_open_orders,
         }
 
-        ks = KillSwitch(self.settings).is_active()
-        user_ws_degraded = bool(
-            self._rt_state
-            and mode == RunMode.LIVE
-            and self._rt_state.is_user_feed_degraded(self.settings)
-        )
         exec_gate = "OK"
         if ks:
             exec_gate = "KILL_SWITCH"
@@ -292,6 +337,14 @@ class MultiMarketOrchestrator:
             "soft_kill": runtime_state.soft_kill,
             "execution_gate": exec_gate,
             "user_ws_degraded": user_ws_degraded,
+            "trade_gate": {
+                "min_gross_edge": self.settings.min_gross_edge,
+                "min_net_edge": self.settings.min_net_edge,
+                "min_confidence": self.settings.min_trade_confidence,
+                "min_execution_quality": self.settings.min_execution_quality,
+                "max_spread_bps": self.settings.trade_gate_max_spread_bps,
+                "min_depth_usd": self.settings.min_depth_usd_trade,
+            },
         }
 
         project_cycle(
@@ -356,22 +409,57 @@ class MultiMarketOrchestrator:
                 continue
 
             sel = self.selector.select(ctx)
-            edge = abs(ctx.live.mid_change_1m_bps) / 10000.0
+            fv = ctx.fair_value
+            tid = ctx.candidate.primary_token_id() or ""
+            stale = bool(self._rt_state.is_stale(tid)) if self._rt_state and tid else False
+            intent = (
+                self.selector.build_intent(ctx, sel.strategy_id)
+                if sel.strategy_id != "no_trade"
+                else None
+            )
+            gate = evaluate_trade_gate(
+                self.settings,
+                ctx,
+                fv,
+                sel,
+                intent,
+                is_stale=stale,
+                feed_degraded=False,
+            )
+
+            en_val = gate.edge_net
             rec = MarketDecisionRecord(
                 market_id=ctx.candidate.market_id,
                 tradable=True,
                 rank=rank,
                 selected_strategy=sel.strategy_id,
-                confidence=sel.confidence,
-                edge_estimate=edge,
-                execution_quality=float(ctx.live.response_score),
-                recommended_action=sel.action,
+                second_best_strategy=sel.second_best_id or "",
+                confidence=round(sel.confidence, 6),
+                fair_prob=round(gate.fair_prob, 6) if gate.fair_prob is not None else None,
+                market_prob=round(gate.market_prob, 6) if gate.market_prob is not None else None,
+                edge_gross=round(gate.edge_gross, 6) if gate.edge_gross is not None else None,
+                estimated_cost=round(gate.estimated_cost, 6) if gate.estimated_cost is not None else None,
+                edge_net=round(en_val, 6) if en_val is not None else None,
+                threshold_net=gate.threshold_net,
+                edge_estimate=round(en_val, 6) if en_val is not None else 0.0,
+                execution_quality=round(gate.execution_quality, 6),
+                trade_allowed=gate.trade_allowed,
+                recommended_action=gate.recommended_action,
                 recommended_size_usd=0.0,
-                reason=sel.rationale,
+                reason=gate.reason,
+                strategy_rationale=sel.rationale,
             )
 
-            if sel.strategy_id == "no_trade" or sel.action == OperationalAction.NO_TRADE:
+            self.adv_metrics.record_trade_gate_outcome(
+                strategy_selected=(sel.strategy_id != "no_trade"),
+                trade_allowed=gate.trade_allowed,
+                reason=gate.reason,
+                edge_net=en_val,
+            )
+
+            if sel.strategy_id == "no_trade":
                 self.metrics.no_trade += 1
+                log.info("decision", **rec.model_dump())
                 runtime_state.push_no_trade(ctx.candidate.market_id, sel.rationale[:40])
                 self.store.update_decision(
                     ctx.candidate.market_id,
@@ -380,20 +468,32 @@ class MultiMarketOrchestrator:
                     action=OperationalAction.NO_TRADE,
                     reason=sel.rationale,
                 )
+                continue
+
+            if not gate.trade_allowed:
+                self.metrics.no_trade += 1
                 log.info("decision", **rec.model_dump())
+                runtime_state.push_no_trade(ctx.candidate.market_id, gate.reason[:48])
+                self.store.update_decision(
+                    ctx.candidate.market_id,
+                    strategy=sel.strategy_id,
+                    score=ctx.score_total,
+                    action=OperationalAction.NO_TRADE,
+                    reason=gate.reason,
+                )
                 continue
 
             if not self.portfolio.can_open_more():
                 self.metrics.no_trade += 1
                 runtime_state.push_no_trade(ctx.candidate.market_id, "max_positions")
-                rec.reason = "max_concurrent_positions"
+                rec = rec.model_copy(
+                    update={
+                        "trade_allowed": False,
+                        "recommended_action": OperationalAction.NO_TRADE,
+                        "reason": "max_concurrent_positions",
+                    }
+                )
                 log.info("decision", **rec.model_dump())
-                continue
-
-            intent = self.selector.build_intent(ctx, sel.strategy_id)
-            if intent is None:
-                self.metrics.no_trade += 1
-                runtime_state.push_no_trade(ctx.candidate.market_id, "no_intent")
                 continue
 
             usd = (
@@ -418,7 +518,15 @@ class MultiMarketOrchestrator:
             )
             if not pr.allowed:
                 self.metrics.rejected_risk += 1
-                rec.reason = pr.message
+                rec = rec.model_copy(
+                    update={
+                        "trade_allowed": False,
+                        "recommended_action": OperationalAction.NO_TRADE,
+                        "reason": NoTradeReason.RISK_BLOCKED.value,
+                        "strategy_rationale": pr.message,
+                    }
+                )
+                log.info("decision", **rec.model_dump())
                 runtime_state.push_no_trade(ctx.candidate.market_id, pr.message[:40])
                 runtime_state.push_risk_reject(ctx.candidate.market_id, pr.message[:80])
                 self._recorder.record(
@@ -430,26 +538,21 @@ class MultiMarketOrchestrator:
                         "strategy": sel.strategy_id,
                     },
                 )
-                log.info("portfolio_block", **rec.model_dump())
                 continue
 
-            action = OperationalAction.ENTER_LIMIT_BUY
-            if intent.side == OrderSide.SELL:
-                action = OperationalAction.ENTER_LIMIT_SELL
-            if sel.action == OperationalAction.PASSIVE_QUOTE:
-                action = OperationalAction.PASSIVE_QUOTE
-
+            action = gate.recommended_action
             rec = rec.model_copy(
                 update={
                     "recommended_action": action,
                     "recommended_size_usd": usd,
                     "tradable": True,
+                    "trade_allowed": True,
+                    "reason": "authorized",
                 }
             )
             log.info("decision", **rec.model_dump())
 
             priority = ctx.score_total * sel.confidence
-            fv = ctx.fair_value
             routed.append(
                 RoutedIntent(
                     priority=priority,
@@ -458,9 +561,11 @@ class MultiMarketOrchestrator:
                     book=ctx.live.book,
                     strategy_id=sel.strategy_id,
                     confidence=sel.confidence,
-                    edge_net=fv.edge_net if fv else None,
-                    passive_quote=(sel.action == OperationalAction.PASSIVE_QUOTE),
+                    edge_net=en_val,
+                    passive_quote=gate.passive_quote,
                     group_key=grp,
+                    trade_allowed=True,
+                    recommended_action=action,
                 )
             )
 
