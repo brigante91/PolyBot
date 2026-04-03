@@ -420,6 +420,7 @@ class MultiMarketOrchestrator:
                 self.metrics.rejected_risk += 1
                 rec.reason = pr.message
                 runtime_state.push_no_trade(ctx.candidate.market_id, pr.message[:40])
+                runtime_state.push_risk_reject(ctx.candidate.market_id, pr.message[:80])
                 self._recorder.record(
                     "risk_reject",
                     {

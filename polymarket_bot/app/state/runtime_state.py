@@ -21,6 +21,7 @@ class RuntimeState:
     risk: dict[str, Any] = field(default_factory=dict)
     debug_lines: list[str] = field(default_factory=list)
     no_trade_hints: list[str] = field(default_factory=list)
+    risk_reject_hints: list[str] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
     paused: bool = False
     soft_kill: bool = False
@@ -33,6 +34,7 @@ class RuntimeState:
     _lock: threading.Lock = field(init=False, repr=False)
     _max_debug: int = 200
     _max_hints: int = 80
+    _max_risk: int = 40
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_lock", threading.Lock())
@@ -96,6 +98,11 @@ class RuntimeState:
             self.no_trade_hints.append(f"{market_id[:10]}… {reason}")
             self.no_trade_hints[:] = self.no_trade_hints[-self._max_hints :]
 
+    def push_risk_reject(self, market_id: str, message: str) -> None:
+        with self._lock:
+            self.risk_reject_hints.append(f"{market_id[:10]}… {message}")
+            self.risk_reject_hints[:] = self.risk_reject_hints[-self._max_risk :]
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
@@ -115,6 +122,7 @@ class RuntimeState:
                 "timeline": list(self.timeline_events)[-200:],
                 "debug": list(self.debug_lines)[-50:],
                 "no_trade_hints": list(self.no_trade_hints)[-20:],
+                "risk_reject_hints": list(self.risk_reject_hints)[-15:],
                 "updated_at": self.updated_at,
                 "paused": self.paused,
                 "soft_kill": self.soft_kill,

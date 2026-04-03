@@ -25,11 +25,6 @@ class MarketPanel(Static):
             ex = str(m.get("explain", ""))[:50]
             if ex:
                 lines.append(f"  [dim]{ex}[/dim]")
-        hints = snap.get("no_trade_hints", [])[-4:]
-        if hints:
-            lines.append("[dim]no-trade:[/dim]")
-            for h in hints:
-                lines.append(f"  [dim]{h[:75]}[/dim]")
         if len(lines) == 1:
             lines.append("(no data — start orchestrator from launcher)")
         return "\n".join(lines)

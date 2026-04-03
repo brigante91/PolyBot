@@ -1,7 +1,7 @@
 """
-Single writer path from operational state (RealtimeStateEngine + orchestrator data) → runtime_state (TUI).
-
-Orchestrator should call `project_cycle` once per logical update instead of scattering runtime_state.update.
+Projection layer: **RealtimeStateEngine** is the operational source of truth for books, fills, trades,
+and feed health. **runtime_state** is a read model for the TUI, updated via `project_cycle` and
+`project_tui_overlay` (doctor/replay only).
 """
 
 from __future__ import annotations
@@ -62,4 +62,20 @@ def project_cycle(
         trades=trades_out,
         runtime_mode=runtime_mode,
         ui_mode=ui_mode,
+    )
+
+
+def project_tui_overlay(
+    *,
+    doctor_last: dict[str, Any] | None = None,
+    replay_mode: bool | None = None,
+    ui_mode: str | None = None,
+    timeline_events: list[dict[str, Any]] | None = None,
+) -> None:
+    """UI-only updates (doctor, replay) — does not replace RealtimeStateEngine-backed fields."""
+    runtime_state.update(
+        doctor_last=doctor_last,
+        replay_mode=replay_mode,
+        ui_mode=ui_mode,
+        timeline_events=timeline_events,
     )

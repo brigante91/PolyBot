@@ -25,14 +25,17 @@ from app.config import RunMode, load_settings
 from app.data.replay_engine import replay_file
 from app.runtime import run_multi_market
 from app.runtime_control import clear_orchestrator_stop, request_orchestrator_stop
+from app.state.runtime_projection import project_tui_overlay
 from app.state.runtime_state import runtime_state
 from app.ui.views import (
     DebugPanel,
     DecisionTracePanel,
+    FeedHealthPanel,
     MarketPanel,
     MetricsPanel,
     OrderBlotterPanel,
     PortfolioPanel,
+    ReasonsPanel,
     RiskPanel,
     SystemPanel,
     TimelinePanel,
@@ -101,12 +104,14 @@ class PolyBotTui(App[None]):
         with Horizontal(id="grid"):
             with Vertical():
                 yield MarketPanel(id="radar")
+                yield ReasonsPanel()
                 yield DecisionTracePanel()
                 yield OrderBlotterPanel()
             with Vertical():
                 yield TradePanel()
                 yield PortfolioPanel()
                 yield RiskPanel()
+                yield FeedHealthPanel()
                 yield MetricsPanel()
                 yield TimelinePanel()
                 yield SystemPanel()
@@ -177,7 +182,9 @@ class PolyBotTui(App[None]):
             code = run_doctor()
             msg = "Doctor OK" if code == 0 else "Doctor FAILED"
             runtime_state.push_debug(msg)
-            runtime_state.update(doctor_last={"status": "pass" if code == 0 else "fail", "exit_code": code})
+            project_tui_overlay(
+                doctor_last={"status": "pass" if code == 0 else "fail", "exit_code": code},
+            )
             self.call_from_thread(self._set_status, msg)
 
         threading.Thread(target=_task, name="polybot-doctor", daemon=True).start()
@@ -204,10 +211,12 @@ class PolyBotTui(App[None]):
             MarketPanel,
             DecisionTracePanel,
             OrderBlotterPanel,
+            ReasonsPanel,
             TradePanel,
             MetricsPanel,
             PortfolioPanel,
             RiskPanel,
+            FeedHealthPanel,
             TimelinePanel,
             SystemPanel,
             DebugPanel,
@@ -244,7 +253,7 @@ class PolyBotTui(App[None]):
         self._set_status(f"Soft kill={runtime_state.soft_kill}")
 
     def action_flatten_hint(self) -> None:
-        runtime_state.push_debug("flatten: use polybot flatten-all for live order cancel / flatten flow")
+        runtime_state.push_debug("cancel orders: polybot cancel-open-orders (alias: flatten-all)")
         self._set_status("Flatten hint logged")
 
     def action_help_keys(self) -> None:

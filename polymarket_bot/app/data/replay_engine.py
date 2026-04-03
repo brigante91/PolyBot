@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
+from app.state.runtime_projection import project_tui_overlay
 from app.state.runtime_state import runtime_state
 
 OnlyFilter = Literal["all", "decisions", "orders", "markets"]
@@ -26,7 +27,7 @@ def replay_file(
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(p)
-    runtime_state.update(replay_mode=True, ui_mode="replay")
+    project_tui_overlay(replay_mode=True, ui_mode="replay")
     timeline: list[dict[str, Any]] = []
     n = 0
     with p.open(encoding="utf-8") as f:
@@ -65,7 +66,7 @@ def replay_file(
             n += 1
             if speed > 0:
                 time.sleep(0.05 / speed)
-    runtime_state.update(
+    project_tui_overlay(
         timeline_events=timeline,
         replay_mode=False,
         ui_mode="idle",

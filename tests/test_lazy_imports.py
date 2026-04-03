@@ -13,7 +13,9 @@ _POLY = str(_ROOT / "polymarket_bot")
 
 
 def _run_isolated(code: str) -> subprocess.CompletedProcess[str]:
+    # Clean path: child must resolve `app` from repo, not a conflicting user install.
     env = {**os.environ, "PYTHONPATH": _POLY}
+    env.pop("PYTHONSAFEPATH", None)
     return subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,

@@ -17,7 +17,7 @@ This software does **not** guarantee profits. It favours **operational safety**,
 | TUI | **Radar**, **decision trace**, **order blotter**, **positions/fills**, **portfolio**, **risk**, **metrics**, **timeline**, **system**, **debug**; **`q`** quit (stops orchestrator) |
 | Live | Same code path — **`Live`** in the launcher or `MODE=live` + `ENABLE_LIVE_TRADING=true`, credentials and risk limits in `.env` |
 | Sessions | JSONL (`schema_version` + `cycle` / `ws_health` / `risk_reject`) — `polybot replay` (optional path = latest session), `--only decisions\|orders\|markets` |
-| Safety | **Kill switch**, **pause** / **soft kill**; **`polybot cancel-open-orders`** or **`flatten-all`** (alias) — cancels open orders only, not net positions |
+| Safety | **Kill switch**, **pause** / **soft kill**; **`polybot cancel-open-orders`** — cancels open CLOB orders only (legacy `flatten-all` still works, hidden in `--help`) |
 | State | **`RealtimeStateEngine`** holds WS books/feeds; **`runtime_projection`** merges into **`runtime_state`** for the TUI |
 
 ---
@@ -170,7 +170,7 @@ python -m app.cli --help
 | **`tui`** | Same as **`polybot-tui`** — launcher + control room |
 | **`replay`** | Replays JSONL into `runtime_state` — optional path (latest `data/sessions/session_*.jsonl`), `--speed`, `--max-lines`, `--only all\|decisions\|orders\|markets` |
 | **`cancel-open-orders`** | CLOB **`cancel_all`** — requires **`ENABLE_LIVE_TRADING=true`** |
-| **`flatten-all`** | Alias of **`cancel-open-orders`** (does not close net positions) |
+| **`flatten-all`** | Deprecated hidden alias of **`cancel-open-orders`** |
 | **`discover-markets`** | Sample Gamma markets (`--limit`) |
 | **`run`** | Legacy single-market loop via `TradingService` (`--strategy`, `--max-iter`) |
 | **`backtest`** | Single-series bar backtest to CSV (`--strategy`, `--from`, `--to`, `--out`) |

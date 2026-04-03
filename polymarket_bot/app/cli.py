@@ -101,9 +101,9 @@ def cancel_open_orders_cmd() -> None:
     raise typer.Exit(0)
 
 
-@app.command("flatten-all")
+@app.command("flatten-all", hidden=True)
 def flatten_all_cmd() -> None:
-    """Alias of cancel-open-orders — cancels open orders only; does not flatten net positions."""
+    """Deprecated alias of cancel-open-orders."""
     _cancel_open_orders_impl()
     raise typer.Exit(0)
 
