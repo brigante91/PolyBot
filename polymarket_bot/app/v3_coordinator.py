@@ -39,6 +39,8 @@ class V3Coordinator:
                 self._state_engine.set_ws_health(market_ok=True)
 
         def _on_user(msg: dict) -> None:
+            if self._state_engine is not None:
+                self._state_engine.apply_user_event(msg)
             t = str(msg.get("type", "")).upper()
             if t == "TRADE" and self._recon:
                 self._recon.record_ws_trade(msg)
@@ -47,8 +49,18 @@ class V3Coordinator:
             if self._state_engine is not None:
                 self._state_engine.set_ws_health(user_ok=True)
 
-        self._mkt = PolymarketWsMarket(settings, on_event=_on_market)
-        self._usr = PolymarketWsUser(settings, on_event=_on_user)
+        def _on_mkt_reconnect() -> None:
+            if self._state_engine is not None:
+                self._state_engine.bump_reconnect(feed="market")
+                self._state_engine.set_ws_health(market_ok=False, detail="reconnecting")
+
+        def _on_usr_reconnect() -> None:
+            if self._state_engine is not None:
+                self._state_engine.bump_reconnect(feed="user")
+                self._state_engine.set_ws_health(user_ok=False, detail="reconnecting")
+
+        self._mkt = PolymarketWsMarket(settings, on_event=_on_market, on_reconnect=_on_mkt_reconnect)
+        self._usr = PolymarketWsUser(settings, on_event=_on_user, on_reconnect=_on_usr_reconnect)
 
     def start_market(self, asset_ids: list[str]) -> None:
         if not self._settings.enable_ws:

@@ -96,13 +96,39 @@ def _check_textual_installed() -> Check:
     return Check("textual_optional", ok, "installed" if ok else "pip install textual")
 
 
+def _check_env_file() -> Check:
+    env = Path(".env")
+    ex = Path(".env.example")
+    if env.is_file():
+        return Check("dotenv_file", True, str(env.resolve()))
+    if ex.is_file():
+        return Check("dotenv_file", True, f"copy {ex.name} → .env (example present)")
+    return Check("dotenv_file", False, "add .env (see .env.example if present)")
+
+
+def _check_live_numeric(settings: Settings) -> Check:
+    ok = (
+        settings.max_order_size_usd > 0
+        and settings.max_total_exposure_usd > 0
+        and settings.daily_loss_limit_usd > 0
+        and settings.max_open_orders > 0
+    )
+    return Check(
+        "risk_limits_positive",
+        ok,
+        "OK" if ok else "set positive MAX_* and DAILY_LOSS_* in .env",
+    )
+
+
 def run_check_env() -> int:
     """Validate .env-loaded settings and required directories."""
     settings = load_settings()
     checks = [
         _check_python_version(),
         _check_app_importable(),
+        _check_env_file(),
         _check_data_dir(settings),
+        _check_live_numeric(settings),
         _check_websockets_installed(),
         _check_textual_installed(),
     ]
@@ -132,7 +158,7 @@ def _print_checks(title: str, checks: list[Check]) -> int:
     t.add_column("Detail")
     bad = 0
     for c in checks:
-        ok_s = "yes" if c.ok else "NO"
+        ok_s = "PASS" if c.ok else "FAIL"
         if not c.ok:
             bad += 1
         t.add_row(c.name, ok_s, c.detail[:120])

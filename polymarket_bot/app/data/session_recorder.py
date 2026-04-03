@@ -39,8 +39,10 @@ class SessionRecorder:
     def record(self, record_type: str, payload: dict[str, Any]) -> None:
         if not self._fh:
             return
+        pl = dict(payload)
+        pl.setdefault("schema_version", 1)
         line = json.dumps(
-            {"t": time.time(), "type": record_type, **payload},
+            {"t": time.time(), "type": record_type, **pl},
             default=str,
         )
         with self._lock:

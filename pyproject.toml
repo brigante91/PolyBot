@@ -25,7 +25,7 @@ dependencies = [
 
 [project.scripts]
 polybot = "app.cli:main"
-polybot-tui = "app.ui.tui_launcher:main"
+polybot-tui = "polymarket_bot.app.ui.tui_app:run_tui"
 
 [project.optional-dependencies]
 dev = [

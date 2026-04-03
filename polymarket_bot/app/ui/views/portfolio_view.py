@@ -14,10 +14,14 @@ class PortfolioPanel(Static):
         dpnl = p.get("daily_pnl_pct", "—")
         op = p.get("open_positions", "—")
         cap = p.get("capital_used_pct", "—")
-        return (
-            f"[bold]PORTFOLIO[/bold]\n"
-            f"Exposure: {exp}%\n"
-            f"Capital used: {cap}\n"
-            f"Daily PnL: {dpnl}%\n"
-            f"Open positions: {op}\n"
-        )
+        per = p.get("per_market_usd") or {}
+        lines = [
+            "[bold]PORTFOLIO[/bold]",
+            f"Exposure: {exp}% | Capital used: {cap}%",
+            f"Daily PnL: {dpnl}% | Open positions: {op}",
+        ]
+        if isinstance(per, dict) and per:
+            lines.append("Per market (USD):")
+            for k, v in list(per.items())[:8]:
+                lines.append(f"  {k}: {v}")
+        return "\n".join(lines)

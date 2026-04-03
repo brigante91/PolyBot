@@ -44,42 +44,67 @@ def doctor_cmd() -> None:
 
 @app.command("replay")
 def replay_cmd(
-    path: str = typer.Argument(..., help="Session JSONL (data/sessions/session_*.jsonl)"),
+    path: Optional[str] = typer.Argument(None, help="Session JSONL; default: latest data/sessions/session_*.jsonl"),
     speed: float = typer.Option(1.0, "--speed", help="Replay speed multiplier"),
     max_lines: Optional[int] = typer.Option(None, "--max-lines"),
+    only: str = typer.Option(
+        "all",
+        "--only",
+        help="all|decisions|orders|markets",
+    ),
 ) -> None:
-    """Replay a recorded JSONL session into the TUI snapshot buffer (offline review)."""
-    from pathlib import Path
+    """Replay a recorded JSONL session into runtime_state (headless; use TUI Replay for UI)."""
+    from app.data.replay_engine import OnlyFilter, replay_file
 
-    from app.data.replay_engine import replay_file
-
-    p = Path(path)
+    p: Path
+    if path:
+        p = Path(path)
+    else:
+        cand = sorted(Path("data/sessions").glob("session_*.jsonl"))
+        if not cand:
+            rprint("[red]No session files in data/sessions — pass a path[/red]")
+            raise typer.Exit(1)
+        p = cand[-1]
     if not p.is_file():
         rprint(f"[red]File not found: {p}[/red]")
         raise typer.Exit(1)
-    n = replay_file(p, speed=speed, max_lines=max_lines)
-    rprint(f"[green]Replayed {n} records from {p}[/green]")
+    o: OnlyFilter = "all"
+    if only in ("all", "decisions", "orders", "markets"):
+        o = only  # type: ignore[assignment]
+    n = replay_file(p, speed=speed, max_lines=max_lines, only=o)
+    rprint(f"[green]Replayed {n} lines from {p} (only={o})[/green]")
     raise typer.Exit(0)
 
 
-@app.command("backfill-history")
+@app.command("backfill-history", hidden=True)
 def backfill_history_cmd() -> None:
-    """Backfill historical snapshots for closed markets — stub."""
-    rprint("[yellow]backfill-history: stub — implement with app.data.recorder when ready[/yellow]")
+    """Not implemented in this release — use external tooling or Gamma API directly."""
+    rprint("[red]backfill-history is not available in this release.[/red]")
+    raise typer.Exit(2)
+
+
+def _cancel_open_orders_impl() -> None:
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    if not settings.enable_live_trading:
+        rprint("[yellow]Set ENABLE_LIVE_TRADING=true in .env[/yellow]")
+        raise typer.Exit(1)
+    clob = ClobWrapper(settings)
+    out = clob.cancel_all()
+    rprint(out)
+
+
+@app.command("cancel-open-orders")
+def cancel_open_orders_cmd() -> None:
+    """Cancel all open CLOB orders (same as flatten-all). Does not close net positions."""
+    _cancel_open_orders_impl()
     raise typer.Exit(0)
 
 
 @app.command("flatten-all")
 def flatten_all_cmd() -> None:
-    """Cancel all open CLOB orders (live). Does not net out positions — close those separately."""
-    settings = load_settings()
-    configure_logging(settings.log_level)
-    if not settings.enable_live_trading:
-        rprint("[yellow]flatten-all: set ENABLE_LIVE_TRADING=true in .env[/yellow]")
-        raise typer.Exit(1)
-    clob = ClobWrapper(settings)
-    out = clob.cancel_all()
-    rprint(out)
+    """Alias of cancel-open-orders — cancels open orders only; does not flatten net positions."""
+    _cancel_open_orders_impl()
     raise typer.Exit(0)
 
 

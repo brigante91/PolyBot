@@ -14,10 +14,11 @@ This software does **not** guarantee profits. It favours **operational safety**,
 | Health | `polybot doctor` / `polybot check-env` |
 | Run (recommended) | **`polybot-tui`** → launcher **Test / Dry-run / Paper / Live** — starts the orchestrator in the background and opens the control room |
 | Run (headless) | `polybot run-multi --mode paper` (or `test`, `dry_run`, `live`) |
-| TUI | **Radar**, **decision trace**, **order blotter** (+ reconciliation rows), **trades**, **portfolio**, **risk**, **metrics**, **system**, **debug**; keys: **`q`** quit (stops orchestrator), **`p`** pause, **`r`** risk multiplier, **`k`** soft kill |
+| TUI | **Radar**, **decision trace**, **order blotter**, **positions/fills**, **portfolio**, **risk**, **metrics**, **timeline**, **system**, **debug**; **`q`** quit (stops orchestrator) |
 | Live | Same code path — **`Live`** in the launcher or `MODE=live` + `ENABLE_LIVE_TRADING=true`, credentials and risk limits in `.env` |
-| Sessions | JSONL recordings under `data/sessions/` — `polybot replay <file.jsonl>` to push snapshots into `runtime_state` |
-| Safety | Env/file **kill switch**, TUI **pause** / **soft kill** skip routing; limit orders + post-only defaults; **`polybot flatten-all`** cancels all CLOB orders when live is enabled |
+| Sessions | JSONL (`schema_version` + `cycle` / `ws_health` / `risk_reject`) — `polybot replay` (optional path = latest session), `--only decisions\|orders\|markets` |
+| Safety | **Kill switch**, **pause** / **soft kill**; **`polybot cancel-open-orders`** or **`flatten-all`** (alias) — cancels open orders only, not net positions |
+| State | **`RealtimeStateEngine`** holds WS books/feeds; **`runtime_projection`** merges into **`runtime_state`** for the TUI |
 
 ---
 
@@ -62,11 +63,11 @@ polymarket_bot/app/
 ├── portfolio/         # manager, exposure_allocator, correlation_manager, …
 ├── risk/              # risk_engine, rules, kill_switch
 ├── services/          # execution, persistence, legacy trading_service
-├── state/             # runtime_state (TUI / cross-thread snapshot)
+├── state/             # runtime_state, runtime_projection (single-writer TUI merge)
 ├── realtime/          # state_engine (thread-safe snapshots for WS-fed state)
 ├── strategy/          # selector + passive_mm, momentum, mean_reversion, fair_value_gap, inventory_reduction, no_trade
 ├── strategies/        # legacy backtest strategies (get_strategy)
-├── ui/                # `tui_launcher` (main entry), `tui_app`, views (market, decision, blotter, trades, portfolio, risk, metrics, system, debug)
+├── ui/                # `tui_launcher` (main entry), `tui_app`, views (+ timeline)
 └── …
 ```
 
@@ -163,13 +164,13 @@ python -m app.cli --help
 
 | Command | Description |
 |---------|-------------|
-| **`check-env`** | Validate install, paths, Textual/websockets (**no network**) |
-| **`doctor`** | `check-env` + public Gamma/CLOB HTTP smoke tests |
-| **`run-multi`** | Multi-market loop: `--mode paper\|dry_run\|live\|test` (test defaults to one cycle unless `--max-cycles` is set) |
+| **`check-env`** | Install, **`.env`**, paths, risk limit sanity, Textual/websockets (**no network**) |
+| **`doctor`** | PASS/FAIL table: lazy `py_clob`, data dir, **Gamma/CLOB HTTP**, deps |
+| **`run-multi`** | Multi-market loop: `--mode paper\|dry_run\|live\|test` |
 | **`tui`** | Same as **`polybot-tui`** — launcher + control room |
-| **`replay`** | `polybot replay <session.jsonl>` — replays recorded cycles into `runtime_state` (`--speed`, `--max-lines`) |
-| **`backfill-history`** | Stub — historical backfill job |
-| **`flatten-all`** | CLOB **`cancel_all`** — requires **`ENABLE_LIVE_TRADING=true`** (emergency cancel; does not net positions) |
+| **`replay`** | Replays JSONL into `runtime_state` — optional path (latest `data/sessions/session_*.jsonl`), `--speed`, `--max-lines`, `--only all\|decisions\|orders\|markets` |
+| **`cancel-open-orders`** | CLOB **`cancel_all`** — requires **`ENABLE_LIVE_TRADING=true`** |
+| **`flatten-all`** | Alias of **`cancel-open-orders`** (does not close net positions) |
 | **`discover-markets`** | Sample Gamma markets (`--limit`) |
 | **`run`** | Legacy single-market loop via `TradingService` (`--strategy`, `--max-iter`) |
 | **`backtest`** | Single-series bar backtest to CSV (`--strategy`, `--from`, `--to`, `--out`) |
@@ -184,7 +185,8 @@ polybot-tui
 python -m app.cli run-multi --mode paper
 python -m app.cli run-multi --mode test --max-cycles 1
 python -m app.cli discover-markets --limit 10
-python -m app.cli replay data/sessions/session_YYYYMMDD_HHMMSS.jsonl
+python -m app.cli replay --only markets
+python -m app.cli cancel-open-orders
 ```
 
 ---
@@ -222,11 +224,11 @@ polybot-tui
 python -m app.cli tui
 ```
 
-**Launcher** (first screen): **Test** (one orchestrator cycle), **Dry-run**, **Paper**, **Live** — starts `run_multi_market` in a daemon thread with that mode (no repo edits).
+**Launcher**: **Test**, **Dry-run**, **Paper**, **Live** (Live requires typing `I UNDERSTAND` + valid `.env` via `validate_live_config`), plus **Doctor** and **Replay** (latest session JSONL).
 
-**Control room**: market **radar**, **decision trace**, **order blotter** (router + reconciliation lifecycle rows), **trades**, **portfolio**, **risk** (limits + recon/WS snapshot), **metrics**, **system** (WS, gate, kill/soft-kill), **debug**.
+**Control room**: **radar** (stale/blocked + no-trade hints), **decision trace** (rationale, risk gate), **blotter**, **positions/fills**, **portfolio** (per-market USD), **risk**, **metrics**, **timeline** (replay audit), **system** (WS feeds, reconnects, doctor status, execution gate), **debug**.
 
-Keys: **`q`** quit (signals orchestrator stop + exits), **`p`** pause, **`r`** cycle risk sizing multiplier, **`k`** soft kill, **`f`** flatten hint, **`h`** help.
+Keys: **`q`** quit (orchestrator stop), **`p`** pause, **`r`** risk tier, **`k`** soft kill, **`f`** hint, **`h`** help.
 
 ---
 

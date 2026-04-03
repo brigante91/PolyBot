@@ -41,6 +41,7 @@ from app.risk.risk_engine import RiskEngine
 from app.services.execution_service import ExecutionService
 from app.services.persistence_service import PersistenceService
 from app.services.portfolio_service import PortfolioService
+from app.state.runtime_projection import project_cycle
 from app.state.runtime_state import runtime_state
 from app.strategy.strategy_selector import StrategySelector
 
@@ -185,6 +186,9 @@ class MultiMarketOrchestrator:
             fv = ctx.fair_value
             scores_row = self.scorer.score(ctx.candidate, ctx.live, ctx.historical)
             sel = self.selector.select(ctx)
+            tid = ctx.candidate.primary_token_id() or ""
+            stale = bool(self._rt_state.is_stale(tid)) if self._rt_state and tid else False
+            blocked = not scores_row.get("recommended", False)
             row = {
                 "id": ctx.candidate.market_id,
                 "score": round(ctx.score_total, 3),
@@ -196,6 +200,9 @@ class MultiMarketOrchestrator:
                 "mkt": round(fv.market_prob, 3) if fv else 0.0,
                 "explain": (sel.explain_selected or "")[:100],
                 "tradable": bool(scores_row.get("recommended", False)),
+                "token_id": tid[:14],
+                "stale": stale,
+                "blocked": blocked,
             }
             tui_markets.append(row)
             decision_trace.append(
@@ -210,6 +217,8 @@ class MultiMarketOrchestrator:
                     "action": sel.action.value,
                     "explain": (sel.explain_selected or "")[:90],
                     "scorer_ok": bool(scores_row.get("recommended", False)),
+                    "rationale": (sel.rationale or "")[:100],
+                    "risk_gate": "ok",
                 }
             )
         lat = "—"
@@ -223,18 +232,20 @@ class MultiMarketOrchestrator:
             else:
                 ws_status = "ON"
 
-        rt_snap: dict[str, Any] = self._rt_state.snapshot() if self._rt_state else {}
-        risk_block: dict[str, Any] = {
+        risk_limits: dict[str, Any] = {
             "max_order_usd": self.settings.max_order_size_usd,
             "max_total_exposure_usd": self.settings.max_total_exposure_usd,
             "max_group_exposure_usd": self.settings.max_exposure_group_usd,
             "daily_loss_limit_usd": self.settings.daily_loss_limit_usd,
             "max_open_orders": self.settings.max_open_orders,
-            "reconciliation": self.recon.snapshot(),
-            "realtime_engine": rt_snap,
         }
 
         ks = KillSwitch(self.settings).is_active()
+        user_ws_degraded = bool(
+            self._rt_state
+            and mode == RunMode.LIVE
+            and self._rt_state.is_user_feed_degraded(self.settings)
+        )
         exec_gate = "OK"
         if ks:
             exec_gate = "KILL_SWITCH"
@@ -242,53 +253,90 @@ class MultiMarketOrchestrator:
             exec_gate = "PAUSED"
         elif runtime_state.soft_kill:
             exec_gate = "SOFT_KILL"
+        elif user_ws_degraded:
+            exec_gate = "USER_WS_DEGRADED"
 
-        runtime_state.update(
+        positions_rows: list[dict[str, Any]] = [
+            {
+                "market_id": k[:14],
+                "side": "—",
+                "size_usd": round(v, 2),
+                "avg_entry": "—",
+                "unreal_pnl": "—",
+                "real_pnl": "—",
+            }
+            for k, v in self.risk.state.exposure.per_market.items()
+            if abs(v) > 1e-6
+        ][:24]
+
+        portfolio_snap = {
+            "exposure_pct": round(
+                100.0 * self.risk.state.exposure.total / max(self.settings.max_total_exposure_usd, 1.0),
+                1,
+            ),
+            "capital_used_pct": round(
+                100.0 * self.risk.state.exposure.total / max(self.settings.max_total_exposure_usd, 1.0),
+                1,
+            ),
+            "daily_pnl_pct": 0.0,
+            "open_positions": self.risk.state.open_position_count,
+            "per_market_usd": {k[:14]: round(v, 2) for k, v in self.risk.state.exposure.per_market.items()},
+        }
+
+        system_snap: dict[str, Any] = {
+            "ws": ws_status,
+            "latency_ms": lat,
+            "health": "GOOD" if self.risk.state.consecutive_api_errors < 3 else "DEGRADED",
+            "kill_switch": ks,
+            "paused": runtime_state.paused,
+            "soft_kill": runtime_state.soft_kill,
+            "execution_gate": exec_gate,
+            "user_ws_degraded": user_ws_degraded,
+        }
+
+        project_cycle(
             markets=tui_markets,
             decisions=decision_trace,
             orders=[],
-            risk=risk_block,
-            portfolio={
-                "exposure_pct": round(
-                    100.0 * self.risk.state.exposure.total / max(self.settings.max_total_exposure_usd, 1.0),
-                    1,
-                ),
-                "capital_used_pct": round(
-                    100.0 * self.risk.state.exposure.total / max(self.settings.max_total_exposure_usd, 1.0),
-                    1,
-                ),
-                "daily_pnl_pct": 0.0,
-                "open_positions": self.risk.state.open_position_count,
-            },
-            system={
-                "ws": ws_status,
-                "latency_ms": lat,
-                "health": "GOOD" if self.risk.state.consecutive_api_errors < 3 else "DEGRADED",
-                "kill_switch": ks,
-                "paused": runtime_state.paused,
-                "soft_kill": runtime_state.soft_kill,
-                "execution_gate": exec_gate,
-            },
+            portfolio=portfolio_snap,
+            system=system_snap,
             metrics=self.adv_metrics.to_dict(),
+            risk_limits=risk_limits,
+            rt_engine=self._rt_state,
+            recon=self.recon,
+            positions=positions_rows,
+            trades=None,
+            runtime_mode=mode.value,
+            ui_mode="run",
         )
 
         routed: list[RoutedIntent] = []
-        if ks or runtime_state.paused or runtime_state.soft_kill:
-            reason = "kill_switch" if ks else ("paused" if runtime_state.paused else "soft_kill")
+        if ks or runtime_state.paused or runtime_state.soft_kill or user_ws_degraded:
+            reason = (
+                "kill_switch"
+                if ks
+                else (
+                    "paused"
+                    if runtime_state.paused
+                    else ("soft_kill" if runtime_state.soft_kill else "user_ws_degraded")
+                )
+            )
             runtime_state.push_debug(f"execution skipped ({reason})")
             self.persistence.heartbeat({"orchestrator": self.metrics.to_dict(), "skipped": reason})
             runtime_state.push_debug(
                 f"cycle scanned={self.metrics.scanned} routed=0 skipped={reason}"
             )
+            rt_full = self._rt_state.snapshot() if self._rt_state else {}
             self._recorder.record(
                 "cycle",
                 {
+                    "schema_version": 1,
                     "mode": mode.value,
                     "markets": tui_markets,
                     "decisions": decision_trace,
                     "orders": [],
                     "metrics": self.adv_metrics.to_dict(),
-                    "risk": risk_block,
+                    "risk": {**risk_limits, "reconciliation": self.recon.snapshot(), "realtime_engine": rt_full},
                     "skipped": reason,
                 },
             )
@@ -372,6 +420,15 @@ class MultiMarketOrchestrator:
                 self.metrics.rejected_risk += 1
                 rec.reason = pr.message
                 runtime_state.push_no_trade(ctx.candidate.market_id, pr.message[:40])
+                self._recorder.record(
+                    "risk_reject",
+                    {
+                        "schema_version": 1,
+                        "market_id": ctx.candidate.market_id,
+                        "message": pr.message,
+                        "strategy": sel.strategy_id,
+                    },
+                )
                 log.info("portfolio_block", **rec.model_dump())
                 continue
 
@@ -450,21 +507,41 @@ class MultiMarketOrchestrator:
         )
         recon_rows = self.recon.recent_lifecycle_rows(limit=20)
         merged_orders = order_rows + recon_rows
-        runtime_state.update(orders=merged_orders, metrics=self.adv_metrics.to_dict(), risk=risk_block)
+        project_cycle(
+            markets=tui_markets,
+            decisions=decision_trace,
+            orders=merged_orders,
+            portfolio=portfolio_snap,
+            system=system_snap,
+            metrics=self.adv_metrics.to_dict(),
+            risk_limits=risk_limits,
+            rt_engine=self._rt_state,
+            recon=self.recon,
+            positions=positions_rows,
+            trades=None,
+            runtime_mode=mode.value,
+            ui_mode="run",
+        )
 
         self.persistence.heartbeat({"orchestrator": self.metrics.to_dict()})
         runtime_state.push_debug(
             f"cycle scanned={self.metrics.scanned} routed={self.metrics.routed} no_trade={self.metrics.no_trade}"
         )
+        rt_full = self._rt_state.snapshot() if self._rt_state else {}
         self._recorder.record(
             "cycle",
             {
+                "schema_version": 1,
                 "mode": mode.value,
                 "markets": tui_markets,
                 "decisions": decision_trace,
                 "orders": order_rows,
                 "metrics": self.adv_metrics.to_dict(),
-                "risk": risk_block,
+                "risk": {**risk_limits, "reconciliation": self.recon.snapshot(), "realtime_engine": rt_full},
             },
+        )
+        self._recorder.record(
+            "ws_health",
+            {"schema_version": 1, "feeds": rt_full.get("feeds", {}), "mode": mode.value},
         )
         return self.metrics

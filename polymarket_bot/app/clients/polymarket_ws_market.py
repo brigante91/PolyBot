@@ -33,10 +33,12 @@ class PolymarketWsMarket:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         *,
         url: str | None = None,
+        on_reconnect: Callable[[], None] | None = None,
     ) -> None:
         self._settings = settings
         self._url = url or settings.ws_market_url or DEFAULT_WS_MARKET
         self._on_event = on_event or (lambda _e: None)
+        self._on_reconnect = on_reconnect
         self._task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -106,6 +108,11 @@ class PolymarketWsMarket:
                             self._on_event(msg)
             except Exception as e:
                 log.warning("ws_market_reconnect", error=str(e), backoff=backoff)
+                if self._on_reconnect:
+                    try:
+                        self._on_reconnect()
+                    except Exception:
+                        pass
                 await asyncio.sleep(backoff)
                 backoff = min(60.0, backoff * 2.0)
 
