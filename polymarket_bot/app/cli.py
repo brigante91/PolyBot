@@ -20,7 +20,7 @@ from app.logger import configure_logging, get_logger
 from app.services.persistence_service import PersistenceService
 from app.runtime import run_multi_market
 from app.services.trading_service import TradingService
-from app.ui.tui_app import run_tui
+from app.ui.tui_launcher import main as tui_main
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 log = get_logger("cli")
@@ -44,11 +44,21 @@ def doctor_cmd() -> None:
 
 @app.command("replay")
 def replay_cmd(
-    path: Optional[str] = typer.Option(None, "--path", help="Session recording (future)"),
+    path: str = typer.Argument(..., help="Session JSONL (data/sessions/session_*.jsonl)"),
+    speed: float = typer.Option(1.0, "--speed", help="Replay speed multiplier"),
+    max_lines: Optional[int] = typer.Option(None, "--max-lines"),
 ) -> None:
-    """Offline replay from recorded session — see docs/REPLAY_AND_BACKTEST.md."""
-    rprint("[yellow]replay: session recorder not wired yet; see docs/REPLAY_AND_BACKTEST.md[/yellow]")
-    _ = path
+    """Replay a recorded JSONL session into the TUI snapshot buffer (offline review)."""
+    from pathlib import Path
+
+    from app.data.replay_engine import replay_file
+
+    p = Path(path)
+    if not p.is_file():
+        rprint(f"[red]File not found: {p}[/red]")
+        raise typer.Exit(1)
+    n = replay_file(p, speed=speed, max_lines=max_lines)
+    rprint(f"[green]Replayed {n} records from {p}[/green]")
     raise typer.Exit(0)
 
 
@@ -61,21 +71,22 @@ def backfill_history_cmd() -> None:
 
 @app.command("flatten-all")
 def flatten_all_cmd() -> None:
-    """Emergency flatten — requires live trading + future position-aware cancels."""
+    """Cancel all open CLOB orders (live). Does not net out positions — close those separately."""
     settings = load_settings()
+    configure_logging(settings.log_level)
     if not settings.enable_live_trading:
-        rprint("[yellow]flatten-all: enable ENABLE_LIVE_TRADING and implement position flatten[/yellow]")
+        rprint("[yellow]flatten-all: set ENABLE_LIVE_TRADING=true in .env[/yellow]")
         raise typer.Exit(1)
-    rprint("[yellow]flatten-all: not fully implemented — use cancel-all + manual close[/yellow]")
-    raise typer.Exit(1)
+    clob = ClobWrapper(settings)
+    out = clob.cancel_all()
+    rprint(out)
+    raise typer.Exit(0)
 
 
 @app.command("tui")
 def tui_cmd() -> None:
-    """Terminal UI (textual) — markets, portfolio, system, debug."""
-    settings = load_settings()
-    configure_logging(settings.log_level)
-    run_tui()
+    """Terminal UI with launcher (same as polybot-tui)."""
+    tui_main()
 
 
 @app.command("discover-markets")
@@ -98,24 +109,25 @@ def discover_markets(limit: int = typer.Option(20, help="Max markets to fetch"))
 
 @app.command("run-multi")
 def run_multi_cmd(
-    mode: str = typer.Option("paper", "--mode", help="paper|dry_run|live"),
+    mode: str = typer.Option("paper", "--mode", help="paper|dry_run|live|test"),
     max_cycles: Optional[int] = typer.Option(None, "--max-cycles"),
 ) -> None:
     """Multi-market adaptive orchestrator (scan → filter → score → select → route)."""
     settings = load_settings()
-    m = RunMode(mode) if mode in ("paper", "dry_run", "live") else RunMode.PAPER
-    run_multi_market(settings, mode=m, max_cycles=max_cycles)
+    m = RunMode(mode) if mode in ("paper", "dry_run", "live", "test") else RunMode.PAPER
+    mc = max_cycles if max_cycles is not None else (1 if m == RunMode.TEST else None)
+    run_multi_market(settings, mode=m, max_cycles=mc)
 
 
 @app.command("run")
 def run_cmd(
-    mode: str = typer.Option("paper", "--mode", help="paper|dry_run|live"),
+    mode: str = typer.Option("paper", "--mode", help="paper|dry_run|live|test"),
     strategy: Optional[str] = typer.Option(None, "--strategy"),
     max_iter: Optional[int] = typer.Option(None, "--max-iter"),
 ) -> None:
     settings = load_settings()
     configure_logging(settings.log_level)
-    m = RunMode(mode) if mode in ("paper", "dry_run", "live") else RunMode.PAPER
+    m = RunMode(mode) if mode in ("paper", "dry_run", "live", "test") else RunMode.PAPER
     svc = TradingService(settings)
     try:
         svc.run_loop(mode=m, strategy_name=strategy, max_iterations=max_iter)

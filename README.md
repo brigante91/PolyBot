@@ -1,20 +1,23 @@
 # PolyBot-V2 — Multi-market adaptive Polymarket engine
 
-Python **3.11+** toolkit for **research and automation** on [Polymarket](https://polymarket.com): Gamma/CLOB/Data API clients, **paper** and **dry-run** by default, optional **live** trading (explicitly gated), SQLite persistence, risk engine, backtesting, and a **multi-market orchestrator** with optional **WebSockets**, **fair value** modelling, **maker-first** execution, and a **terminal UI (TUI)**.
+Python **3.11+** toolkit for **research and automation** on [Polymarket](https://polymarket.com): Gamma/CLOB/Data API clients, **paper** and **dry-run** by default, optional **live** trading (explicitly gated), SQLite persistence, risk engine, backtesting, and a **multi-market orchestrator** with optional **WebSockets**, **realtime state engine**, **fair value** modelling, **maker-first** execution, **session recording / replay**, and a **TUI control room** (`polybot-tui`) with a **mode launcher** (test / dry-run / paper / live).
 
 This software does **not** guarantee profits. It favours **operational safety**, **observability**, and **selective trading** (“tradare meglio, non di più”).
 
-### Production-ready checklist (V4 FINAL target)
+### Production-ready checklist
 
 | Criterion | How |
 |-----------|-----|
 | Install | `uv pip install -e ".[dev]"` or `pip install -e ".[dev]"` from repo root |
+| Config | Copy **`.env.example`** → **`.env`** — no code edits to switch run mode from the TUI |
 | Tests | `pytest -q` — no live API keys required |
 | Health | `polybot doctor` / `polybot check-env` |
-| Run | `polybot run-multi --mode paper` |
-| TUI | `polybot-tui` — markets, **decision trace**, **order blotter**, metrics, portfolio, system (kill/pause/soft-kill), debug |
-| Live | Same code path — set `MODE=live`, `ENABLE_LIVE_TRADING=true`, credentials and risk in `.env` |
-| Safety | Env/file **kill switch**, TUI **pause** (`p`) and **soft kill** (`k`) skip routing; limit orders + post-only defaults |
+| Run (recommended) | **`polybot-tui`** → launcher **Test / Dry-run / Paper / Live** — starts the orchestrator in the background and opens the control room |
+| Run (headless) | `polybot run-multi --mode paper` (or `test`, `dry_run`, `live`) |
+| TUI | **Radar**, **decision trace**, **order blotter** (+ reconciliation rows), **trades**, **portfolio**, **risk**, **metrics**, **system**, **debug**; keys: **`q`** quit (stops orchestrator), **`p`** pause, **`r`** risk multiplier, **`k`** soft kill |
+| Live | Same code path — **`Live`** in the launcher or `MODE=live` + `ENABLE_LIVE_TRADING=true`, credentials and risk limits in `.env` |
+| Sessions | JSONL recordings under `data/sessions/` — `polybot replay <file.jsonl>` to push snapshots into `runtime_state` |
+| Safety | Env/file **kill switch**, TUI **pause** / **soft kill** skip routing; limit orders + post-only defaults; **`polybot flatten-all`** cancels all CLOB orders when live is enabled |
 
 ---
 
@@ -36,7 +39,7 @@ The orchestrator (**`app/orchestrator.py`**, driven by **`app/runtime.py`**) ran
 | **Intelligence** | Live features, historical profile, **fair value** (`fair_prob`, `edge`, `edge_net`, `confidence`), scoring | `app/analysis/` |
 | **Decision** | Strategy selection, portfolio, risk | `app/strategy/`, `app/portfolio/`, `app/risk/` |
 | **Execution** | Order router, execution service, **quote engine** (post-only / tiered edge), reconciliation | `app/execution/`, `app/services/execution_service.py` |
-| **Observability** | TUI, orchestrator metrics, advanced metrics, structured logs | `app/ui/`, `app/state/`, `app/monitor/` |
+| **Observability** | TUI launcher + control room, session **recorder/replay**, orchestrator metrics, advanced metrics, structured logs | `app/ui/`, `app/state/`, `app/data/session_recorder.py`, `app/data/replay_engine.py`, `app/monitor/` |
 
 Legacy **signal-style** strategies for bar backtests remain under **`app/strategies/`**; the live pipeline uses **`app/strategy/`** (intent-based, no direct order sends).
 
@@ -48,11 +51,11 @@ Application code lives under **`polymarket_bot/app/`** (import name **`app`** af
 
 ```
 polymarket_bot/app/
-├── cli.py, main.py, runtime.py, orchestrator.py, v3_coordinator.py
+├── cli.py, main.py, runtime.py, runtime_control.py, orchestrator.py, v3_coordinator.py
 ├── analysis/          # live, historical, scorer, fair_value_engine, feature_builder
 ├── backtest/          # bar engine, v4 multi-market driver
 ├── clients/           # gamma, clob, rest facade, ws market/user, spot_price, rtds stub
-├── data/              # market_store, cache, replay, …
+├── data/              # market_store, cache; session_recorder (JSONL), replay_engine
 ├── discovery/         # market_universe, market_filter, market_metadata
 ├── execution/         # order_router, quote_engine, ws_handler, reconciliation
 ├── monitor/           # metrics, health, advanced_metrics
@@ -63,7 +66,7 @@ polymarket_bot/app/
 ├── realtime/          # state_engine (thread-safe snapshots for WS-fed state)
 ├── strategy/          # selector + passive_mm, momentum, mean_reversion, fair_value_gap, inventory_reduction, no_trade
 ├── strategies/        # legacy backtest strategies (get_strategy)
-├── ui/                # textual TUI + views (market, trades, portfolio, system, debug, metrics)
+├── ui/                # `tui_launcher` (main entry), `tui_app`, views (market, decision, blotter, trades, portfolio, risk, metrics, system, debug)
 └── …
 ```
 
@@ -102,7 +105,7 @@ PYTHONPATH=polymarket_bot python -m app.cli --help
 | Command | Purpose |
 |---------|---------|
 | `polybot` | Same as `python -m app.cli` |
-| `polybot-tui` | Launches the Textual TUI |
+| `polybot-tui` | **Main entry** — mode launcher + production control room (orchestrator thread) |
 
 ---
 
@@ -111,8 +114,8 @@ PYTHONPATH=polymarket_bot python -m app.cli --help
 1. `uv pip install -e ".[dev]"` and `cp .env.example .env`
 2. `polybot check-env` — local imports, data dir, optional deps (**no network**)
 3. `polybot doctor` — same + public **Gamma/CLOB HTTP** reachability
-4. `polybot run-multi --mode paper --max-cycles 1`
-5. Optional: second terminal → `polybot-tui` while `run-multi` is running
+4. **`polybot-tui`** — pick **Test** (one cycle), **Dry-run**, **Paper**, or **Live**; the orchestrator runs in a background thread and feeds the TUI
+5. Optional: headless orchestrator only — `polybot run-multi --mode paper` (or `test` / `dry_run` / `live`) without the TUI
 
 Full walkthrough: **[docs/FIRST_RUN.md](docs/FIRST_RUN.md)** · TUI: **[docs/TUI_GUIDE.md](docs/TUI_GUIDE.md)** · Architecture: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** · Risk: **[docs/RISK_MODEL.md](docs/RISK_MODEL.md)** · Replay/backtest: **[docs/REPLAY_AND_BACKTEST.md](docs/REPLAY_AND_BACKTEST.md)**
 
@@ -124,8 +127,9 @@ Copy **`.env.example`** → **`.env`**. Never commit secrets.
 
 **Modes**
 
-- **`MODE`**: `paper` (default), `dry_run`, `live`.
+- **`MODE`**: `paper` (default), `dry_run`, `live`, `test` (single-cycle smoke; same as headless `run-multi --mode test`).
 - **`ENABLE_LIVE_TRADING`**: must be `true` for real CLOB orders; combine with risk limits.
+- From **`polybot-tui`**, the launcher picks the runtime **for that session** without editing files; `.env` still supplies hosts, limits, secrets, and optional `MODE` for non-TUI commands.
 - **`KILL_SWITCH`** / **`KILL_SWITCH_FILE`**: global halt.
 
 **Multi-market (orchestrator)**
@@ -138,7 +142,7 @@ Copy **`.env.example`** → **`.env`**. Never commit secrets.
 
 **WebSockets (event-driven books / user events)**
 
-- **`ENABLE_WS`**, **`WS_MARKET_URL`**, **`WS_USER_URL`**. When enabled, the orchestrator can start **`V3Coordinator`** (market hub + user channel into reconciliation).
+- **`ENABLE_WS`**, **`WS_MARKET_URL`**, **`WS_USER_URL`**. When enabled, the orchestrator starts **`V3Coordinator`** (market hub + user channel into reconciliation) and updates **`RealtimeStateEngine`** (books + WS health surfaced in the **Risk** panel).
 
 **Underlying spot for fair value (optional)**
 
@@ -161,11 +165,11 @@ python -m app.cli --help
 |---------|-------------|
 | **`check-env`** | Validate install, paths, Textual/websockets (**no network**) |
 | **`doctor`** | `check-env` + public Gamma/CLOB HTTP smoke tests |
-| **`run-multi`** | Multi-market loop: `--mode paper\|dry_run\|live`, optional `--max-cycles N` |
-| **`tui`** | Terminal UI (run **`run-multi`** in another terminal to feed live state) |
-| **`replay`** | Stub — offline session replay (see docs) |
+| **`run-multi`** | Multi-market loop: `--mode paper\|dry_run\|live\|test` (test defaults to one cycle unless `--max-cycles` is set) |
+| **`tui`** | Same as **`polybot-tui`** — launcher + control room |
+| **`replay`** | `polybot replay <session.jsonl>` — replays recorded cycles into `runtime_state` (`--speed`, `--max-lines`) |
 | **`backfill-history`** | Stub — historical backfill job |
-| **`flatten-all`** | Stub — emergency flatten (requires live + future implementation) |
+| **`flatten-all`** | CLOB **`cancel_all`** — requires **`ENABLE_LIVE_TRADING=true`** (emergency cancel; does not net positions) |
 | **`discover-markets`** | Sample Gamma markets (`--limit`) |
 | **`run`** | Legacy single-market loop via `TradingService` (`--strategy`, `--max-iter`) |
 | **`backtest`** | Single-series bar backtest to CSV (`--strategy`, `--from`, `--to`, `--out`) |
@@ -176,10 +180,11 @@ python -m app.cli --help
 Examples:
 
 ```bash
+polybot-tui
 python -m app.cli run-multi --mode paper
-python -m app.cli run-multi --mode paper --max-cycles 1
+python -m app.cli run-multi --mode test --max-cycles 1
 python -m app.cli discover-markets --limit 10
-python -m app.cli tui
+python -m app.cli replay data/sessions/session_YYYYMMDD_HHMMSS.jsonl
 ```
 
 ---
@@ -196,7 +201,7 @@ python -m app.cli tui
 8. **Portfolio / risk** — `ExposureAllocator`, `PortfolioManager`, `RiskEngine`, **`CorrelationManager`** (e.g. BTC/ETH/SOL groups).  
 9. **Route** — `OrderRouter` → **`ExecutionService`** (dedup, slippage, paper/live; **`QuoteEngine`** for maker tiers / post-only live).  
 10. **Reconcile** — `ReconciliationService` (intent → sent → WS events); **`AdvancedMetrics`** (edge at entry, fill/cancel ratios, …).  
-11. **TUI** — `runtime_state` updated each cycle (markets, portfolio, system, metrics, debug, no-trade hints).
+11. **TUI** — `runtime_state` updated each cycle (markets, decisions, orders + recon rows, portfolio, risk snapshot, system, metrics, debug, no-trade hints); optional JSONL **session** log under `data/sessions/`.
 
 ---
 
@@ -213,11 +218,15 @@ python -m app.cli tui
 
 ```bash
 polybot-tui
-# or
+# equivalent
 python -m app.cli tui
 ```
 
-Panels: markets, trades, **metrics**, portfolio, system, debug (and no-trade hints). Keys: **`q`** quit, **`p`** pause, **`r`** cycle risk multiplier (also used by orchestrator for sizing).
+**Launcher** (first screen): **Test** (one orchestrator cycle), **Dry-run**, **Paper**, **Live** — starts `run_multi_market` in a daemon thread with that mode (no repo edits).
+
+**Control room**: market **radar**, **decision trace**, **order blotter** (router + reconciliation lifecycle rows), **trades**, **portfolio**, **risk** (limits + recon/WS snapshot), **metrics**, **system** (WS, gate, kill/soft-kill), **debug**.
+
+Keys: **`q`** quit (signals orchestrator stop + exits), **`p`** pause, **`r`** cycle risk sizing multiplier, **`k`** soft kill, **`f`** flatten hint, **`h`** help.
 
 ---
 

@@ -155,10 +155,10 @@ class ExecutionService:
         if book and not self.slippage_ok(intent, book):
             return ExecutionResult(False, reason=RejectReason.SLIPPAGE, message="slippage")
 
-        if mode in (RunMode.PAPER, RunMode.DRY_RUN):
-            if mode == RunMode.DRY_RUN:
-                log.info("dry_run_skip_submit", intent=intent.model_dump())
-                return ExecutionResult(True, message="dry_run")
+        if mode in (RunMode.PAPER, RunMode.DRY_RUN, RunMode.TEST):
+            if mode in (RunMode.DRY_RUN, RunMode.TEST):
+                log.info("dry_run_skip_submit", intent=intent.model_dump(), mode=mode.value)
+                return ExecutionResult(True, message="dry_run" if mode == RunMode.DRY_RUN else "test")
             fill = self._paper.simulate_fill(intent, book)
             self._recent_keys[key] = time.time()
             oid = fill.get("order_id", "paper")

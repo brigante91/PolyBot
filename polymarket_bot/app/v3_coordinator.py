@@ -8,6 +8,7 @@ from app.config import Settings
 from app.execution.ws_handler import WsMarketHub
 from app.execution.reconciliation import ReconciliationService
 from app.logger import get_logger
+from app.realtime.state_engine import RealtimeStateEngine
 
 log = get_logger("v3_coordinator")
 
@@ -20,13 +21,22 @@ class V3Coordinator:
         settings: Settings,
         hub: WsMarketHub,
         recon: ReconciliationService | None = None,
+        state_engine: RealtimeStateEngine | None = None,
     ) -> None:
         self._settings = settings
         self._hub = hub
         self._recon = recon
+        self._state_engine = state_engine
 
         def _on_market(msg: dict) -> None:
             self._hub.apply_raw(msg)
+            if self._state_engine is not None:
+                aid = str(msg.get("asset_id") or msg.get("assetId") or "")
+                if aid:
+                    b = self._hub.get_book(aid)
+                    if b is not None:
+                        self._state_engine.apply_book_snapshot(aid, b)
+                self._state_engine.set_ws_health(market_ok=True)
 
         def _on_user(msg: dict) -> None:
             t = str(msg.get("type", "")).upper()
@@ -34,6 +44,8 @@ class V3Coordinator:
                 self._recon.record_ws_trade(msg)
             elif str(msg.get("event_type", "")).lower() == "order" and self._recon:
                 self._recon.record_ws_order_event(msg)
+            if self._state_engine is not None:
+                self._state_engine.set_ws_health(user_ok=True)
 
         self._mkt = PolymarketWsMarket(settings, on_event=_on_market)
         self._usr = PolymarketWsUser(settings, on_event=_on_user)

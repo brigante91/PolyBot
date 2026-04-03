@@ -19,8 +19,10 @@ from app.execution.order_router import OrderRouter, RoutedIntent
 from app.execution.quote_engine import QuoteEngine
 from app.execution.reconciliation import ReconciliationService
 from app.execution.ws_handler import WsMarketHub
+from app.data.session_recorder import SessionRecorder
 from app.monitor.advanced_metrics import AdvancedMetrics
 from app.portfolio.correlation_manager import CorrelationManager
+from app.realtime.state_engine import RealtimeStateEngine
 from app.v3_coordinator import V3Coordinator
 from app.logger import get_logger
 from app.models.candidate import CandidateMarket
@@ -86,10 +88,13 @@ class MultiMarketOrchestrator:
         )
         self.router = OrderRouter(settings, self.execution)
         self._corr = CorrelationManager(settings)
+        self._rt_state: RealtimeStateEngine | None = RealtimeStateEngine() if settings.enable_ws else None
         self._v3: V3Coordinator | None = None
         self._v3_ws_started = False
         if settings.enable_ws and self.ws_hub is not None:
-            self._v3 = V3Coordinator(settings, self.ws_hub, self.recon)
+            self._v3 = V3Coordinator(settings, self.ws_hub, self.recon, state_engine=self._rt_state)
+        self._recorder = SessionRecorder()
+        self._recorder.open_default()
         self.allocator = ExposureAllocator(settings, self.risk)
         self.metrics = OrchestratorMetrics()
         self._fve = FairValueEngine(fee_bps=settings.paper_fee_bps, slippage_bps=settings.paper_slippage_bps)
@@ -99,6 +104,7 @@ class MultiMarketOrchestrator:
     def close(self) -> None:
         if self._v3 is not None:
             self._v3.stop()
+        self._recorder.close()
         self._spot.close()
         self.facade.close()
 
@@ -217,6 +223,17 @@ class MultiMarketOrchestrator:
             else:
                 ws_status = "ON"
 
+        rt_snap: dict[str, Any] = self._rt_state.snapshot() if self._rt_state else {}
+        risk_block: dict[str, Any] = {
+            "max_order_usd": self.settings.max_order_size_usd,
+            "max_total_exposure_usd": self.settings.max_total_exposure_usd,
+            "max_group_exposure_usd": self.settings.max_exposure_group_usd,
+            "daily_loss_limit_usd": self.settings.daily_loss_limit_usd,
+            "max_open_orders": self.settings.max_open_orders,
+            "reconciliation": self.recon.snapshot(),
+            "realtime_engine": rt_snap,
+        }
+
         ks = KillSwitch(self.settings).is_active()
         exec_gate = "OK"
         if ks:
@@ -230,6 +247,7 @@ class MultiMarketOrchestrator:
             markets=tui_markets,
             decisions=decision_trace,
             orders=[],
+            risk=risk_block,
             portfolio={
                 "exposure_pct": round(
                     100.0 * self.risk.state.exposure.total / max(self.settings.max_total_exposure_usd, 1.0),
@@ -261,6 +279,18 @@ class MultiMarketOrchestrator:
             self.persistence.heartbeat({"orchestrator": self.metrics.to_dict(), "skipped": reason})
             runtime_state.push_debug(
                 f"cycle scanned={self.metrics.scanned} routed=0 skipped={reason}"
+            )
+            self._recorder.record(
+                "cycle",
+                {
+                    "mode": mode.value,
+                    "markets": tui_markets,
+                    "decisions": decision_trace,
+                    "orders": [],
+                    "metrics": self.adv_metrics.to_dict(),
+                    "risk": risk_block,
+                    "skipped": reason,
+                },
             )
             return self.metrics
 
@@ -387,6 +417,8 @@ class MultiMarketOrchestrator:
                 lifecycle = "rejected"
             elif mode == RunMode.DRY_RUN:
                 lifecycle = "dry_run"
+            elif mode == RunMode.TEST:
+                lifecycle = "test"
             elif mode == RunMode.PAPER:
                 lifecycle = "filled"
             else:
@@ -404,7 +436,7 @@ class MultiMarketOrchestrator:
                     "lifecycle": lifecycle,
                 }
             )
-            if er.ok and mode != RunMode.DRY_RUN:
+            if er.ok and mode not in (RunMode.DRY_RUN, RunMode.TEST):
                 self.risk.state.open_position_count = min(
                     self.settings.max_concurrent_positions,
                     self.risk.state.open_position_count + 1,
@@ -416,10 +448,23 @@ class MultiMarketOrchestrator:
             self.metrics.no_trade,
             max(1, self.metrics.no_trade + self.metrics.routed + self.metrics.rejected_risk),
         )
-        runtime_state.update(orders=order_rows, metrics=self.adv_metrics.to_dict())
+        recon_rows = self.recon.recent_lifecycle_rows(limit=20)
+        merged_orders = order_rows + recon_rows
+        runtime_state.update(orders=merged_orders, metrics=self.adv_metrics.to_dict(), risk=risk_block)
 
         self.persistence.heartbeat({"orchestrator": self.metrics.to_dict()})
         runtime_state.push_debug(
             f"cycle scanned={self.metrics.scanned} routed={self.metrics.routed} no_trade={self.metrics.no_trade}"
+        )
+        self._recorder.record(
+            "cycle",
+            {
+                "mode": mode.value,
+                "markets": tui_markets,
+                "decisions": decision_trace,
+                "orders": order_rows,
+                "metrics": self.adv_metrics.to_dict(),
+                "risk": risk_block,
+            },
         )
         return self.metrics

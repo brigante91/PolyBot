@@ -104,7 +104,7 @@ class TradingService:
             }
             strat.prepare({"mid": mid, "book": book})
 
-            if mode == RunMode.DRY_RUN:
+            if mode in (RunMode.DRY_RUN, RunMode.TEST):
                 sig = strat.generate_signal(state)
                 if sig:
                     self.persistence.insert_signal(sig.model_dump())

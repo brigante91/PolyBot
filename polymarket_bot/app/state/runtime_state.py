@@ -19,6 +19,8 @@ class RuntimeState:
     portfolio: dict[str, Any] = field(default_factory=dict)
     system: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
+    """Risk limits snapshot + correlation / exposure hints for the risk panel."""
+    risk: dict[str, Any] = field(default_factory=dict)
     debug_lines: list[str] = field(default_factory=list)
     no_trade_hints: list[str] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
@@ -43,6 +45,7 @@ class RuntimeState:
         portfolio: dict[str, Any] | None = None,
         system: dict[str, Any] | None = None,
         metrics: dict[str, Any] | None = None,
+        risk: dict[str, Any] | None = None,
     ) -> None:
         with self._lock:
             if markets is not None:
@@ -59,6 +62,8 @@ class RuntimeState:
                 self.system = system
             if metrics is not None:
                 self.metrics = metrics
+            if risk is not None:
+                self.risk = risk
             self.updated_at = time.time()
 
     def push_debug(self, line: str) -> None:
@@ -81,6 +86,7 @@ class RuntimeState:
                 "portfolio": dict(self.portfolio),
                 "system": dict(self.system),
                 "metrics": dict(self.metrics),
+                "risk": dict(self.risk),
                 "debug": list(self.debug_lines)[-50:],
                 "no_trade_hints": list(self.no_trade_hints)[-20:],
                 "updated_at": self.updated_at,

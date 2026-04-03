@@ -11,9 +11,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class RunMode(str, Enum):
+    """Operational mode. TEST = one-cycle smoke (no live orders). Configure via MODE in .env only when not using the TUI launcher."""
     PAPER = "paper"
     DRY_RUN = "dry_run"
     LIVE = "live"
+    TEST = "test"
 
 
 class Settings(BaseSettings):

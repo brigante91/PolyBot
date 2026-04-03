@@ -94,6 +94,34 @@ class ReconciliationService:
         with self._lock:
             return {"orders_tracked": len(self._by_oid), "recent_mismatches": list(self._mismatch_log)[-10:]}
 
+    def recent_lifecycle_rows(self, *, limit: int = 24) -> list[dict[str, Any]]:
+        """Deduplicated rows for TUI blotter / audit (by server_order_id or key)."""
+        with self._lock:
+            by_oid: dict[str, dict[str, Any]] = {}
+            for k, row in self._by_oid.items():
+                oid = str(row.get("server_order_id") or k)[:24]
+                by_oid[oid] = row
+            rows: list[dict[str, Any]] = []
+            for oid, row in by_oid.items():
+                lc = str(row.get("lifecycle", ""))
+                payload = row.get("payload") or {}
+                mid = str(payload.get("market_id", ""))[:14] if isinstance(payload, dict) else ""
+                rows.append(
+                    {
+                        "order_id": oid,
+                        "lifecycle": lc,
+                        "market_id": mid,
+                        "side": "—",
+                        "price": "—",
+                        "size": "—",
+                        "post_only": "—",
+                        "strategy": "recon",
+                        "ok": True,
+                        "reason": "",
+                    }
+                )
+            return rows[-limit:]
+
     def record_execution(
         self,
         *,
