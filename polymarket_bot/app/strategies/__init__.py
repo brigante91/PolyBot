@@ -14,6 +14,8 @@ from app.strategies.mean_reversion_micro import MeanReversionMicroStrategy
 
 REGISTRY: dict[str, type[BaseStrategy]] = {
     "market_making_passive": MarketMakingPassiveStrategy,
+    # Alias aligned with `app.strategy` naming (V4)
+    "passive_market_making": MarketMakingPassiveStrategy,
     "mean_reversion_micro": MeanReversionMicroStrategy,
     "fair_value_gap": FairValueGapStrategy,
     "event_momentum_guarded": EventMomentumGuardedStrategy,

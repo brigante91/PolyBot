@@ -16,11 +16,17 @@ class MeanReversionMicroStrategy(StrategyBase):
         sp = ctx.live.spread_bps
         if sp is None or sp > self._settings.max_spread_bps * 0.85:
             return False
+        fv = ctx.fair_value
+        if fv is not None and fv.confidence < 0.25:
+            return False
         return ctx.live.depth_top_usd >= self._settings.min_orderbook_depth_usd
 
     def score(self, ctx: MarketContext) -> float:
         z = abs(ctx.live.mid_change_1m_bps) / 100.0
-        return min(1.0, z) * 0.7 + float(ctx.score_total) * 0.3
+        base = min(1.0, z) * 0.7 + float(ctx.score_total) * 0.3
+        if ctx.fair_value is not None:
+            base *= 0.5 + 0.5 * abs(ctx.fair_value.fair_prob - ctx.fair_value.market_prob)
+        return base
 
     def build_order_intent(self, ctx: MarketContext) -> OrderIntent | None:
         tid = ctx.candidate.primary_token_id()

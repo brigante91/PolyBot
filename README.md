@@ -1,54 +1,66 @@
-# PolyBot-V2 — Polymarket research bot
+# PolyBot-V2 — Multi-market adaptive Polymarket engine
 
-Production-like Python 3.11+ toolkit for **disciplined research and automation** on Polymarket: public market data, optional CLOB trading (explicitly gated), **paper** and **dry-run** modes by default, SQLite persistence, backtesting primitives, and a standalone **risk engine**.
+Python **3.11+** toolkit for **research and automation** on [Polymarket](https://polymarket.com): Gamma/CLOB/Data API clients, **paper** and **dry-run** by default, optional **live** trading (explicitly gated), SQLite persistence, risk engine, backtesting, and a **multi-market orchestrator** with optional **WebSockets**, **fair value** modelling, **maker-first** execution, and a **terminal UI (TUI)**.
 
-This software does **not** guarantee profits. It is designed to favour **operational safety**, **observability**, and **repeatable experiments**—not maximum trade frequency.
+This software does **not** guarantee profits. It favours **operational safety**, **observability**, and **selective trading** (“tradare meglio, non di più”).
 
-## Architecture
+---
 
-### Core (legacy + shared)
+## What the bot does
 
-- **`app/config.py`** — `pydantic-settings` validation; live trading requires explicit flags and risk limits.
-- **`app/clients/`** — Gamma, CLOB (`py-clob-client`), Data API; **`polymarket_rest.py`** facade; WS stubs (`polymarket_ws_*`) with TODOs until official WS docs are wired.
-- **`app/services/`** — Execution (pre-trade, dedup, reason codes), persistence, legacy single-market `TradingService`.
-- **`app/risk/`** — Kill switch, exposure limits, position sizing, `RiskEngine`; **`market_risk_rules.py`** / **`portfolio_risk_rules.py`** for per-market vs portfolio gates.
-- **`app/strategies/`** — Original signal-style strategies (still importable).
-- **`app/paper/`** — Conservative simulated fills (fees, slippage, queue assumption).
-- **`app/backtest/`** — Bar engine, simulator, metrics + CSV export.
-- **`app/cli.py`** — Typer CLI (orchestration only).
+Instead of a single fixed market and strategy, the recommended path is:
 
-### Multi-market adaptive engine (V2)
+**universe scan → filter → live + historical analysis → scoring → strategy selection → portfolio/risk → order routing → reconciliation → (optional) TUI**
 
-Operational pipeline (see **`app/orchestrator.py`**):
+The orchestrator (**`app/orchestrator.py`**, driven by **`app/runtime.py`**) ranks candidates and only proceeds with the best opportunities under global and per-group limits.
 
-`universe scan → filter → live analysis → historical profile → scoring → strategy selection → portfolio/risk → order routing → reconciliation`
+---
 
-| Package | Role |
-|--------|------|
-| **`app/discovery/`** | `market_universe.py` (full universe), `market_filter.py` (hard exclusions) |
-| **`app/analysis/`** | `live_market_analyzer.py`, `historical_analyzer.py`, `market_scorer.py`, `feature_builder.py` |
-| **`app/strategy/`** | `strategy_selector.py`, per-strategy modules with **`can_trade` / `score` / `build_order_intent`** only (no direct order send) |
-| **`app/portfolio/`** | `portfolio_manager.py`, `exposure_allocator.py`, `position_registry.py`, `pnl_tracker.py` |
-| **`app/execution/`** | `order_router.py`, `reconciliation.py`, `quote_manager.py` (maker-first hooks) |
-| **`app/data/`** | `market_store.py`, `historical_store.py`, `cache.py`, `replay.py` (replay stub) |
-| **`app/monitor/`** | `metrics.py`, `health.py` |
-| **`app/runtime.py`** | Signal-safe loop calling **`MultiMarketOrchestrator`** |
+## Architecture (logical layers)
 
-Structured JSON logs include **decision records** per `market_id` (strategy, action, size, reason).
+| Layer | Role | Main locations |
+|--------|------|----------------|
+| **Data** | REST (Gamma, CLOB), optional **market/user WebSockets**, optional **spot REST** / **RTDS stub** | `app/clients/` |
+| **Intelligence** | Live features, historical profile, **fair value** (`fair_prob`, `edge`, `edge_net`, `confidence`), scoring | `app/analysis/` |
+| **Decision** | Strategy selection, portfolio, risk | `app/strategy/`, `app/portfolio/`, `app/risk/` |
+| **Execution** | Order router, execution service, **quote engine** (post-only / tiered edge), reconciliation | `app/execution/`, `app/services/execution_service.py` |
+| **Observability** | TUI, orchestrator metrics, advanced metrics, structured logs | `app/ui/`, `app/state/`, `app/monitor/` |
 
-## APIs: Gamma vs Data vs CLOB
+Legacy **signal-style** strategies for bar backtests remain under **`app/strategies/`**; the live pipeline uses **`app/strategy/`** (intent-based, no direct order sends).
 
-| API | Role | Auth |
-|-----|------|------|
-| **Gamma** | Markets, events, metadata, `clobTokenIds` | Public |
-| **Data** | Positions, trades, activity for a wallet address | Public reads (see docs) |
-| **CLOB** | Order book, midpoint, spreads, prices, **orders** | Public reads; trading needs key + API creds (see Polymarket docs) |
+---
 
-## Setup
+## Repository layout
 
-The package **`app`** lives under `polymarket_bot/app/`. You must install the project in **editable** mode (or set `PYTHONPATH=polymarket_bot`). Installing only `requirements.txt` dependencies is **not** enough: you will get `ModuleNotFoundError: No module named 'app'`.
+Application code lives under **`polymarket_bot/app/`** (import name **`app`** after editable install).
 
-### Using uv (recommended)
+```
+polymarket_bot/app/
+├── cli.py, main.py, runtime.py, orchestrator.py, v3_coordinator.py
+├── analysis/          # live, historical, scorer, fair_value_engine, feature_builder
+├── backtest/          # bar engine, v4 multi-market driver
+├── clients/           # gamma, clob, rest facade, ws market/user, spot_price, rtds stub
+├── data/              # market_store, cache, replay, …
+├── discovery/         # market_universe, market_filter, market_metadata
+├── execution/         # order_router, quote_engine, ws_handler, reconciliation
+├── monitor/           # metrics, health, advanced_metrics
+├── portfolio/         # manager, exposure_allocator, correlation_manager, …
+├── risk/              # risk_engine, rules, kill_switch
+├── services/          # execution, persistence, legacy trading_service
+├── state/             # runtime_state (TUI / cross-thread snapshot)
+├── strategy/          # selector + passive_mm, momentum, mean_reversion, fair_value_gap, no_trade
+├── strategies/        # legacy backtest strategies (get_strategy)
+├── ui/                # textual TUI + views (market, trades, portfolio, system, debug, metrics)
+└── …
+```
+
+---
+
+## Installation
+
+The package must be installed so that **`import app`** resolves. Installing **only** transitive deps (e.g. `uv pip install -r requirements.txt` **without** the project) is **not** enough: you will get `ModuleNotFoundError: No module named 'app'`.
+
+### Recommended: `uv` + editable install
 
 ```bash
 cd PolyBot-V2
@@ -58,130 +70,148 @@ uv pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-Use **`uv pip`** so packages go into the venv. If you run plain `pip install -e .` and see “Defaulting to user installation”, the editable install is **not** in your venv—fix permissions or use `uv pip install -e ".[dev]"`.
+Use **`uv pip install -e ".[dev]"`** so the editable install lands **inside** the venv. If plain `pip install -e .` prints **“Defaulting to user installation”**, the project is not in the active venv—use `uv pip` or fix venv permissions.
 
-### Alternative: requirements + editable line
+### Alternative
 
-`requirements.txt` includes `-e .` so this also registers `app`:
+- **`requirements.txt`** may include `-e .`; run:  
+  `uv pip install -r requirements.txt`  
+  from the project root so the package is linked.
 
-```bash
-uv pip install -r requirements.txt
-```
-
-### pip / venv
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-Run the CLI:
-
-```bash
-python -m app.cli --help
-# or, after install:
-polybot --help
-```
-
-Without installing, one-off:
+### Run without installing (one-off)
 
 ```bash
 PYTHONPATH=polymarket_bot python -m app.cli --help
 ```
 
-## Environment
+### Entry points (after install)
 
-Copy `.env.example` to `.env`. **Never commit secrets.** Required behaviour:
+| Command | Purpose |
+|---------|---------|
+| `polybot` | Same as `python -m app.cli` |
+| `polybot-tui` | Launches the Textual TUI |
 
-- **`MODE`**: `paper` (default), `dry_run`, or `live`.
-- **`ENABLE_LIVE_TRADING`**: must be `true` for real orders; must be paired with risk limits.
-- **`KILL_SWITCH`**: global halt; optional file flag `KILL_SWITCH_FILE` (default `./data/kill_switch`).
-- Risk caps: `MAX_ORDER_SIZE_USD`, `MAX_MARKET_EXPOSURE_USD`, `MAX_TOTAL_EXPOSURE_USD`, `DAILY_LOSS_LIMIT_USD`, `MAX_OPEN_ORDERS`, etc.
+---
 
-## Public market data
+## Configuration
 
-Discovery example (Gamma):
+Copy **`.env.example`** → **`.env`**. Never commit secrets.
 
-```http
-GET https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=10
-```
+**Modes**
 
-From code:
+- **`MODE`**: `paper` (default), `dry_run`, `live`.
+- **`ENABLE_LIVE_TRADING`**: must be `true` for real CLOB orders; combine with risk limits.
+- **`KILL_SWITCH`** / **`KILL_SWITCH_FILE`**: global halt.
+
+**Multi-market (orchestrator)**
+
+- **`MULTI_MARKET_MODE`**, **`UNIVERSE_*`**, **`LIVE_ANALYSIS_TOP_N`**, **`SCORE_MIN_TRADABLE`**, **`MAX_CONCURRENT_POSITIONS`**, **`ORCHESTRATOR_INTERVAL_SECONDS`**, **`MAX_EXPOSURE_GROUP_USD`** (correlation groups), etc.
+
+**Maker-first**
+
+- **`MAKER_FIRST_POST_ONLY`**, **`ALLOW_MARKET_ORDERS`** (default off for safety).
+
+**WebSockets (event-driven books / user events)**
+
+- **`ENABLE_WS`**, **`WS_MARKET_URL`**, **`WS_USER_URL`**. When enabled, the orchestrator can start **`V3Coordinator`** (market hub + user channel into reconciliation).
+
+**Underlying spot for fair value (optional)**
+
+- **`ENABLE_SPOT_PRICE_REST`**, **`SPOT_PRICE_TTL_SECONDS`** — REST fallback for BTC/ETH/SOL-style keywords in market text.
+- **`ENABLE_RTDS`**, **`RTDS_WS_URL`** — placeholder for a streaming feed (see `app/clients/rtds_client.py`).
+
+**Paper / backtest**
+
+- **`PAPER_FEE_BPS`**, **`PAPER_SLIPPAGE_BPS`**, etc.
+
+---
+
+## CLI reference
 
 ```bash
-python -m app.cli discover-markets --limit 10
+python -m app.cli --help
 ```
 
-Order book via the CLOB wrapper uses `py-clob-client` (`get_order_book(token_id)`).
+| Command | Description |
+|---------|-------------|
+| **`run-multi`** | Multi-market loop: `--mode paper\|dry_run\|live`, optional `--max-cycles N` |
+| **`tui`** | Terminal UI (run **`run-multi`** in another terminal to feed live state) |
+| **`discover-markets`** | Sample Gamma markets (`--limit`) |
+| **`run`** | Legacy single-market loop via `TradingService` (`--strategy`, `--max-iter`) |
+| **`backtest`** | Single-series bar backtest to CSV (`--strategy`, `--from`, `--to`, `--out`) |
+| **`status`** | Last heartbeat / DB path |
+| **`risk-report`** | Recent risk events |
+| **`cancel-all`** | CLOB `cancel_all` — only if **`ENABLE_LIVE_TRADING=true`** |
 
-## PolyBot V3 (production-grade path)
-
-- **WebSockets**: `app/clients/polymarket_ws_market.py` / `polymarket_ws_user.py` — CLOB market & user channels ([docs](https://docs.polymarket.com/developers/CLOB/websocket/wss-overview)). Set **`ENABLE_WS=true`** and wire **`V3Coordinator`** (`app/v3_coordinator.py`) with a `WsMarketHub` for event-driven books; reconciliation hooks user events in `ReconciliationService`.
-- **Fair value**: `app/analysis/fair_value_engine.py` — `fair_prob`, `edge`, `edge_net`, `confidence` (replaces naive RSI/MACD-only signals for V3 paths).
-- **Quote engine**: `app/execution/quote_engine.py` — post-only / maker-first via `ClobWrapper.create_limit_order_post(..., post_only=True)`.
-- **WS handler**: `app/execution/ws_handler.py` — normalizes `book` / `best_bid_ask` events into `OrderBookSnapshot`.
-- **TUI**: `python -m app.cli tui` or `polybot-tui` — Textual dashboard (markets, trades, portfolio, system, debug). Run **`run-multi`** in another terminal to feed `runtime_state`.
-- **State**: `app/state/runtime_state.py` — thread-safe snapshot consumed by the TUI.
-- **Metrics**: `app/monitor/advanced_metrics.py` — counters for fill/cancel/maker ratio (extend in orchestrator).
-
-## Multi-market mode (recommended)
+Examples:
 
 ```bash
 python -m app.cli run-multi --mode paper
-# one cycle then exit (testing):
 python -m app.cli run-multi --mode paper --max-cycles 1
+python -m app.cli discover-markets --limit 10
+python -m app.cli tui
 ```
 
-Set **`MULTI_MARKET_MODE=true`** and tune **`UNIVERSE_*`**, **`LIVE_ANALYSIS_TOP_N`**, **`SCORE_MIN_TRADABLE`**, **`MAX_CONCURRENT_POSITIONS`**, **`ORCHESTRATOR_INTERVAL_SECONDS`** in `.env`.
+---
 
-The orchestrator **scores and ranks** markets; only the best candidates proceed to strategy selection and execution. **Limit orders** are the default; **`ALLOW_MARKET_ORDERS`** defaults to false.
+## Multi-market pipeline (detail)
 
-## Paper trading (single-market legacy loop)
+1. **Scan** — `MarketUniverseScanner` (Gamma pages, cap by settings).  
+2. **Filter** — `MarketFilter` (liquidity, time to resolution, volume, spread, tokens, …).  
+3. **Live analysis** — `LiveMarketAnalyzer` (order book via CLOB; optional **`WsMarketHub`** when WS enabled).  
+4. **Historical** — `HistoricalAnalyzer` → profile (expectancy, edge stability, …).  
+5. **Score** — `MarketScorer` → `score_total`, `recommended`.  
+6. **Fair value** — `FairValueEngine` on each candidate (`MarketContext.fair_value`).  
+7. **Strategy** — `StrategySelector` → action (`NO_TRADE`, `PASSIVE_QUOTE`, limit buy/sell, …).  
+8. **Portfolio / risk** — `ExposureAllocator`, `PortfolioManager`, `RiskEngine`, **`CorrelationManager`** (e.g. BTC/ETH/SOL groups).  
+9. **Route** — `OrderRouter` → **`ExecutionService`** (dedup, slippage, paper/live; **`QuoteEngine`** for maker tiers / post-only live).  
+10. **Reconcile** — `ReconciliationService` (intent → sent → WS events); **`AdvancedMetrics`** (edge at entry, fill/cancel ratios, …).  
+11. **TUI** — `runtime_state` updated each cycle (markets, portfolio, system, metrics, debug, no-trade hints).
+
+---
+
+## WebSockets & fair value
+
+- **Market WS** (`polymarket_ws_market.py`): subscribe by asset (token) ids; events applied via **`WsMarketHub`** (`ws_handler.py`).  
+- **User WS** (`polymarket_ws_user.py`): authenticated user channel; order/trade events feed reconciliation.  
+- **Fair value** (`fair_value_engine.py`): structural + microstructure blend; optional **underlying** / **strike** when data is available.  
+- **Quote engine** (`quote_engine.py`): adjusts limits by `edge_net`; skips very low edge; live path uses **post-only** when configured.
+
+---
+
+## TUI (Textual + Rich)
 
 ```bash
-python -m app.cli run --mode paper --strategy market_making_passive
+polybot-tui
+# or
+python -m app.cli tui
 ```
 
-Paper mode simulates fills with configurable **fee**, **slippage**, and **queue** assumptions (`PAPER_*` in `.env`).
+Panels: markets, trades, **metrics**, portfolio, system, debug (and no-trade hints). Keys: **`q`** quit, **`p`** pause, **`r`** cycle risk multiplier (also used by orchestrator for sizing).
 
-## Dry-run
+---
 
-```bash
-python -m app.cli run --mode dry_run --strategy mean_reversion_micro
-```
+## Backtesting
 
-Signals are logged and persisted; **no orders** are submitted.
-
-## Live trading (danger)
-
-1. Configure wallet/API credentials per Polymarket documentation (Level 1/2 auth).
-2. Set **`ENABLE_LIVE_TRADING=true`** and **`MODE=live`**.
-3. Ensure all risk limits are set to sane values; verify **`KILL_SWITCH`** is off.
-4. Use `python -m app.cli cancel-all` only when live is intentionally enabled.
-
-If `ENABLE_LIVE_TRADING` is false, `cancel-all` refuses to run.
-
-## Backtest
+**Single series** (legacy signal strategies):
 
 ```bash
 python -m app.cli backtest --strategy mean_reversion_micro --from 2025-01-01 --to 2025-03-01 --out outputs/metrics.csv
 ```
 
-The bundled driver uses **synthetic** daily bars when no file is supplied—replace with your historical series for research.
+**Multi-market driver** (programmatic): `app.backtest.MultiMarketBacktest` in `app/backtest/v4_multi_engine.py` — several DataFrames, optional per-market **expiry** bar, shared bankroll. The CLI **`backtest`** command still uses the single-DF engine unless you extend it.
 
-## Status & risk report
-
-```bash
-python -m app.cli status
-python -m app.cli risk-report
-```
+---
 
 ## Tests
 
 ```bash
 python -m pytest tests/ -q
 ```
+
+`pyproject.toml` sets `pythonpath = ["polymarket_bot"]` for pytest.
+
+---
 
 ## Docker (optional)
 
@@ -190,18 +220,37 @@ docker compose build
 docker compose run --rm app python -m app.cli discover-markets --limit 3
 ```
 
-Mount a local `.env` and `data/` volume as needed (see `docker-compose.yml`).
+Mount `.env` and `data/` as needed (see `docker-compose.yml`).
 
-## Adding a strategy (V2)
+---
 
-1. Add a module under **`app/strategy/`** implementing **`StrategyBase`**: `can_trade`, `score`, `build_order_intent`.
-2. Register it in **`StrategySelector.__init__`** (list order matters for tie-breaks; `no_trade` is implicit).
-3. Add unit tests under **`tests/`**.
+## Adding a strategy (orchestrator path)
+
+1. Implement **`StrategyBase`** in **`app/strategy/`**: `can_trade`, `score`, `build_order_intent` (no direct sends).  
+2. Register in **`StrategySelector`** (list order affects tie-breaks; **`no_trade`** is implicit).  
+3. Use **`MarketContext`** including optional **`fair_value`** for FV-aware logic.  
+4. Add tests under **`tests/`**.
+
+For **backtest-only** signal plugins, use **`app/strategies/`** and `get_strategy`; consider aligning names with **`app/strategy/`** (e.g. `passive_market_making` alias in `strategies/__init__.py`).
+
+---
+
+## APIs (reminder)
+
+| API | Role | Auth |
+|-----|------|------|
+| **Gamma** | Markets, metadata, `clobTokenIds` | Public |
+| **Data API** | Activity / positions (wallet-scoped) | See Polymarket docs |
+| **CLOB** | Books, midpoint, **orders** | Reads public; trading needs wallet + API credentials per docs |
+
+---
 
 ## Risk disclaimer
 
-Trading prediction markets involves **substantial risk of loss**. This project is for **education and research**. Past backtests or paper results do not predict future performance. Review Polymarket terms and applicable regulations before using real funds.
+Trading prediction markets involves **substantial risk of loss**. This project is for **education and research**. Not financial advice. Review Polymarket terms and applicable laws before using real funds.
+
+---
 
 ## License
 
-MIT (verify `py-clob-client` and dependencies’ licenses for your use case).
+MIT (verify licenses of `py-clob-client` and other dependencies for your use case).

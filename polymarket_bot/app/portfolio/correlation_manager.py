@@ -17,9 +17,12 @@ class CorrelationManager:
 
     def group_key(self, category: str | None, slug: str | None, question: str) -> str:
         blob = f"{category or ''} {slug or ''} {question}".upper()
-        for tag in ("BTC", "BITCOIN", "ETH", "ETHEREUM", "SOL", "SOLANA"):
-            if tag in blob:
-                return tag.split()[0][:3]
+        if "BTC" in blob or "BITCOIN" in blob:
+            return "BTC"
+        if "ETH" in blob or "ETHEREUM" in blob:
+            return "ETH"
+        if "SOL" in blob or "SOLANA" in blob:
+            return "SOL"
         return "OTHER"
 
     def current_group_exposure(self, group: str) -> float:

@@ -39,3 +39,14 @@ class CandidateMarket(BaseModel):
             return None
         s = str(cid).strip()
         return s or None
+
+    def infer_spot_symbol(self) -> str | None:
+        """Map market text to a major crypto spot symbol for optional underlying price (REST/RTDS)."""
+        blob = f"{self.slug or ''} {self.question} {self.category or ''}".upper()
+        if "BITCOIN" in blob or " BTC" in blob or blob.startswith("BTC"):
+            return "BTC"
+        if "ETHEREUM" in blob or " ETH" in blob or blob.startswith("ETH"):
+            return "ETH"
+        if "SOLANA" in blob or " SOL" in blob or blob.startswith("SOL"):
+            return "SOL"
+        return None

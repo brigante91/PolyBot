@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import time
 from typing import Any
 
-from app.analysis.fair_value_engine import FairValueEngine, FairValueInputs
+from app.analysis.fair_value_engine import FairValueEngine
 from app.analysis.historical_analyzer import HistoricalAnalyzer
 from app.analysis.live_market_analyzer import LiveMarketAnalyzer
 from app.analysis.market_scorer import MarketScorer
 from app.clients.polymarket_rest import PolymarketRestFacade
+from app.clients.spot_price_client import SpotPriceClient
 from app.config import RunMode, Settings
 from app.data.market_store import MarketStateStore
 from app.discovery.market_filter import MarketFilter
 from app.discovery.market_universe import MarketUniverseScanner
 from app.execution.order_router import OrderRouter, RoutedIntent
+from app.execution.quote_engine import QuoteEngine
 from app.execution.reconciliation import ReconciliationService
 from app.execution.ws_handler import WsMarketHub
+from app.monitor.advanced_metrics import AdvancedMetrics
+from app.portfolio.correlation_manager import CorrelationManager
 from app.v3_coordinator import V3Coordinator
 from app.logger import get_logger
+from app.models.candidate import CandidateMarket
 from app.models.context import MarketContext
 from app.models.decision import MarketDecisionRecord, OperationalAction
 from app.models.order import OrderSide
@@ -64,6 +69,9 @@ class MultiMarketOrchestrator:
         self.persistence = PersistenceService(settings)
         self.paper = PaperBroker(settings)
         self.portfolio_legacy = PortfolioService()
+        self.adv_metrics = AdvancedMetrics()
+        self.recon = ReconciliationService(self.persistence, metrics=self.adv_metrics)
+        self.quote_engine = QuoteEngine(settings, self.facade.clob)
         self.execution = ExecutionService(
             settings,
             self.risk,
@@ -71,9 +79,12 @@ class MultiMarketOrchestrator:
             self.paper,
             self.portfolio_legacy,
             self.persistence,
+            quote_engine=self.quote_engine,
+            metrics=self.adv_metrics,
+            reconciliation=self.recon,
         )
         self.router = OrderRouter(settings, self.execution)
-        self.recon = ReconciliationService(self.persistence)
+        self._corr = CorrelationManager(settings)
         self._v3: V3Coordinator | None = None
         self._v3_ws_started = False
         if settings.enable_ws and self.ws_hub is not None:
@@ -81,11 +92,28 @@ class MultiMarketOrchestrator:
         self.allocator = ExposureAllocator(settings, self.risk)
         self.metrics = OrchestratorMetrics()
         self._fve = FairValueEngine(fee_bps=settings.paper_fee_bps, slippage_bps=settings.paper_slippage_bps)
+        self._spot = SpotPriceClient(settings)
+        self._spot_cache: dict[str, tuple[float, float]] = {}
 
     def close(self) -> None:
         if self._v3 is not None:
             self._v3.stop()
+        self._spot.close()
         self.facade.close()
+
+    def _underlying_for_candidate(self, c: CandidateMarket) -> tuple[float | None, float | None]:
+        """REST spot for crypto keywords; RTDS can populate the same tuple later."""
+        sym = c.infer_spot_symbol()
+        if not sym or not self.settings.enable_spot_price_rest:
+            return None, None
+        now = time.time()
+        cached = self._spot_cache.get(sym)
+        if cached and now - cached[1] < self.settings.spot_price_ttl_seconds:
+            return cached[0], None
+        px = self._spot.fetch_usd(sym)
+        if px is not None:
+            self._spot_cache[sym] = (px, now)
+        return px, None
 
     def run_cycle(self, mode: RunMode) -> OrchestratorMetrics:
         self.metrics = OrchestratorMetrics()
@@ -137,37 +165,25 @@ class MultiMarketOrchestrator:
         contexts.sort(key=lambda x: -x.score_total)
         self.metrics.ranked = len(contexts)
 
+        enriched: list[MarketContext] = []
+        for ctx in contexts:
+            u, k = self._underlying_for_candidate(ctx.candidate)
+            fv = ctx.compute_fair_value(self._fve, underlying_price=u, price_to_beat=k)
+            enriched.append(ctx.model_copy(update={"fair_value": fv}))
+        contexts = enriched
+
         tui_markets: list[dict[str, Any]] = []
         for ctx in contexts[:18]:
-            mid = ctx.live.book.mid() if ctx.live.book else 0.5
-            ttr_y = 1e-6
-            if ctx.candidate.end_date:
-                now = datetime.now(timezone.utc)
-                end = ctx.candidate.end_date
-                if end.tzinfo is None:
-                    end = end.replace(tzinfo=timezone.utc)
-                ttr_y = max(1e-10, (end - now).total_seconds() / (365.25 * 86400.0))
-            fv = self._fve.estimate(
-                FairValueInputs(
-                    market_mid=float(mid or 0.5),
-                    underlying_price=None,
-                    price_to_beat=None,
-                    time_to_expiry_years=ttr_y,
-                    price_velocity=ctx.live.mid_change_1m_bps / 10000.0,
-                    volatility_annual=0.55,
-                    book_imbalance=ctx.live.book_imbalance,
-                    distance_from_mid_bps=0.0,
-                )
-            )
+            fv = ctx.fair_value
             sel = self.selector.select(ctx)
             tui_markets.append(
                 {
                     "id": ctx.candidate.market_id,
                     "score": round(ctx.score_total, 3),
                     "strategy": sel.strategy_id,
-                    "edge": round(fv.edge_net, 4),
-                    "fair": round(fv.fair_prob, 3),
-                    "mkt": round(fv.market_prob, 3),
+                    "edge": round(fv.edge_net, 4) if fv else 0.0,
+                    "fair": round(fv.fair_prob, 3) if fv else 0.0,
+                    "mkt": round(fv.market_prob, 3) if fv else 0.0,
                 }
             )
         lat = "—"
@@ -188,6 +204,10 @@ class MultiMarketOrchestrator:
                     100.0 * self.risk.state.exposure.total / max(self.settings.max_total_exposure_usd, 1.0),
                     1,
                 ),
+                "capital_used_pct": round(
+                    100.0 * self.risk.state.exposure.total / max(self.settings.max_total_exposure_usd, 1.0),
+                    1,
+                ),
                 "daily_pnl_pct": 0.0,
                 "open_positions": self.risk.state.open_position_count,
             },
@@ -196,6 +216,7 @@ class MultiMarketOrchestrator:
                 "latency_ms": lat,
                 "health": "GOOD" if self.risk.state.consecutive_api_errors < 3 else "DEGRADED",
             },
+            metrics=self.adv_metrics.to_dict(),
         )
 
         routed: list[RoutedIntent] = []
@@ -204,6 +225,7 @@ class MultiMarketOrchestrator:
             scores = self.scorer.score(ctx.candidate, ctx.live, ctx.historical)
             if not scores.get("recommended", False):
                 self.metrics.no_trade += 1
+                runtime_state.push_no_trade(ctx.candidate.market_id, "low_score")
                 log.info(
                     "decision_skip_low_score",
                     market_id=ctx.candidate.market_id,
@@ -228,6 +250,7 @@ class MultiMarketOrchestrator:
 
             if sel.strategy_id == "no_trade" or sel.action == OperationalAction.NO_TRADE:
                 self.metrics.no_trade += 1
+                runtime_state.push_no_trade(ctx.candidate.market_id, sel.rationale[:40])
                 self.store.update_decision(
                     ctx.candidate.market_id,
                     strategy=sel.strategy_id,
@@ -240,6 +263,7 @@ class MultiMarketOrchestrator:
 
             if not self.portfolio.can_open_more():
                 self.metrics.no_trade += 1
+                runtime_state.push_no_trade(ctx.candidate.market_id, "max_positions")
                 rec.reason = "max_concurrent_positions"
                 log.info("decision", **rec.model_dump())
                 continue
@@ -247,22 +271,33 @@ class MultiMarketOrchestrator:
             intent = self.selector.build_intent(ctx, sel.strategy_id)
             if intent is None:
                 self.metrics.no_trade += 1
+                runtime_state.push_no_trade(ctx.candidate.market_id, "no_intent")
                 continue
 
-            usd = self.allocator.recommend_usd(ctx, sel.confidence)
+            usd = (
+                self.allocator.recommend_usd(ctx, sel.confidence)
+                * max(0.25, min(2.0, runtime_state.risk_level))
+            )
             px = float(intent.price)
             intent = intent.model_copy(update={"size": max(usd / max(px, 1e-9), 0.0)})
 
+            grp = self._corr.group_key(
+                ctx.candidate.category,
+                ctx.candidate.slug,
+                ctx.candidate.question,
+            )
+            group_after = self._corr.current_group_exposure(grp) + usd
             pr = check_portfolio(
                 self.risk,
                 positions_after=self.portfolio.open_positions_count() + 1,
-                group_exposure_usd=0.0,
+                group_exposure_usd=group_after,
                 strategy_id=sel.strategy_id,
                 category=ctx.candidate.category,
             )
             if not pr.allowed:
                 self.metrics.rejected_risk += 1
                 rec.reason = pr.message
+                runtime_state.push_no_trade(ctx.candidate.market_id, pr.message[:40])
                 log.info("portfolio_block", **rec.model_dump())
                 continue
 
@@ -282,6 +317,7 @@ class MultiMarketOrchestrator:
             log.info("decision", **rec.model_dump())
 
             priority = ctx.score_total * sel.confidence
+            fv = ctx.fair_value
             routed.append(
                 RoutedIntent(
                     priority=priority,
@@ -290,6 +326,9 @@ class MultiMarketOrchestrator:
                     book=ctx.live.book,
                     strategy_id=sel.strategy_id,
                     confidence=sel.confidence,
+                    edge_net=fv.edge_net if fv else None,
+                    passive_quote=(sel.action == OperationalAction.PASSIVE_QUOTE),
+                    group_key=grp,
                 )
             )
 
@@ -304,6 +343,14 @@ class MultiMarketOrchestrator:
                     self.settings.max_concurrent_positions,
                     self.risk.state.open_position_count + 1,
                 )
+                notion = abs(float(ri.intent.price) * float(ri.intent.size))
+                self._corr.add_exposure(ri.group_key, notion)
+
+        self.adv_metrics.update_no_trade_ratio(
+            self.metrics.no_trade,
+            max(1, self.metrics.no_trade + self.metrics.routed + self.metrics.rejected_risk),
+        )
+        runtime_state.update(metrics=self.adv_metrics.to_dict())
 
         self.persistence.heartbeat({"orchestrator": self.metrics.to_dict()})
         runtime_state.push_debug(

@@ -116,6 +116,14 @@ class Settings(BaseSettings):
         alias="WS_USER_URL",
     )
 
+    # Optional underlying spot for fair value (REST fallback; RTDS can replace later)
+    enable_spot_price_rest: bool = Field(default=False, alias="ENABLE_SPOT_PRICE_REST")
+    spot_price_ttl_seconds: float = Field(default=30.0, alias="SPOT_PRICE_TTL_SECONDS")
+
+    # Polymarket RTDS WebSocket (optional; stub URL — enable when credentials/feed documented)
+    enable_rtds: bool = Field(default=False, alias="ENABLE_RTDS")
+    rtds_ws_url: str = Field(default="", alias="RTDS_WS_URL")
+
     @field_validator("mode", mode="before")
     @classmethod
     def _mode(cls, v: Any) -> Any:

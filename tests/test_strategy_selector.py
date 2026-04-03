@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from app.analysis.fair_value_engine import FairValueResult
 from app.config import Settings
 from app.models.candidate import CandidateMarket
 from app.models.context import HistoricalProfile, LiveFeatures, MarketContext
@@ -23,6 +24,13 @@ def test_selector_returns_result() -> None:
         live=LiveFeatures(spread_bps=200.0, depth_top_usd=5000.0, mid_change_1m_bps=50.0),
         historical=HistoricalProfile(),
         score_total=0.9,
+        fair_value=FairValueResult(
+            fair_prob=0.58,
+            market_prob=0.52,
+            edge=0.06,
+            edge_net=0.04,
+            confidence=0.72,
+        ),
     )
     r = sel.select(ctx)
     assert r.strategy_id in (

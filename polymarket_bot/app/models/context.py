@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from datetime import datetime, timezone
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.analysis.fair_value_engine import FairValueEngine, FairValueInputs, FairValueResult
 from app.models.candidate import CandidateMarket
 from app.models.orderbook import OrderBookSnapshot
 
@@ -35,8 +38,40 @@ class HistoricalProfile(BaseModel):
 
 
 class MarketContext(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     candidate: CandidateMarket
     live: LiveFeatures = Field(default_factory=LiveFeatures)
     historical: HistoricalProfile = Field(default_factory=HistoricalProfile)
     score_total: float = 0.0
     rank: int = 0
+    fair_value: FairValueResult | None = None
+
+    def compute_fair_value(
+        self,
+        engine: FairValueEngine,
+        *,
+        underlying_price: float | None = None,
+        price_to_beat: float | None = None,
+    ) -> FairValueResult:
+        """Attach probabilistic fair value from live book and time to expiry."""
+        mid = self.live.book.mid() if self.live.book else 0.5
+        ttr_y = 1e-6
+        if self.candidate.end_date:
+            now = datetime.now(timezone.utc)
+            end = self.candidate.end_date
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
+            ttr_y = max(1e-10, (end - now).total_seconds() / (365.25 * 86400.0))
+        return engine.estimate(
+            FairValueInputs(
+                market_mid=float(mid or 0.5),
+                underlying_price=underlying_price,
+                price_to_beat=price_to_beat,
+                time_to_expiry_years=ttr_y,
+                price_velocity=self.live.mid_change_1m_bps / 10000.0,
+                volatility_annual=0.55,
+                book_imbalance=self.live.book_imbalance,
+                distance_from_mid_bps=0.0,
+            )
+        )

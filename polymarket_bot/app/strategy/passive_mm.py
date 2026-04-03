@@ -18,11 +18,17 @@ class PassiveMarketMakingStrategy(StrategyBase):
         sp = ctx.live.spread_bps
         if sp is None:
             return False
+        fv = ctx.fair_value
+        if fv is not None and fv.confidence < 0.28:
+            return False
         return sp >= max(40.0, self._settings.max_spread_bps * 0.2) and float(ctx.score_total) >= self._settings.score_min_tradable
 
     def score(self, ctx: MarketContext) -> float:
         sp = ctx.live.spread_bps or 9999.0
-        return min(1.0, max(0.0, 1.0 - sp / max(self._settings.max_spread_bps, 1.0))) * 0.6 + float(ctx.score_total) * 0.4
+        base = min(1.0, max(0.0, 1.0 - sp / max(self._settings.max_spread_bps, 1.0))) * 0.6 + float(ctx.score_total) * 0.4
+        if ctx.fair_value is not None:
+            base *= 0.55 + 0.45 * float(ctx.fair_value.confidence)
+        return base
 
     def build_order_intent(self, ctx: MarketContext) -> OrderIntent | None:
         tid = ctx.candidate.primary_token_id()

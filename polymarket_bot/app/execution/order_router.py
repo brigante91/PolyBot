@@ -21,6 +21,9 @@ class RoutedIntent:
     book: OrderBookSnapshot | None
     strategy_id: str
     confidence: float
+    edge_net: float | None = None
+    passive_quote: bool = False
+    group_key: str = "OTHER"
 
 
 class OrderRouter:
@@ -52,6 +55,10 @@ class OrderRouter:
                 book=ri.book,
                 bankroll_usd=bankroll_usd,
                 confidence=ri.confidence,
+                edge_net=ri.edge_net,
+                use_maker_quote=ri.passive_quote,
+                market_id=ri.market_id,
+                strategy_id=ri.strategy_id,
             )
             out.append((ri, res))
         return out

@@ -15,11 +15,17 @@ class MomentumMicroStrategy(StrategyBase):
     def can_trade(self, ctx: MarketContext) -> bool:
         if abs(ctx.live.mid_change_1m_bps) < 15.0:
             return False
+        fv = ctx.fair_value
+        if fv is not None and fv.confidence < 0.35:
+            return False
         return ctx.live.response_score >= 0.4 and float(ctx.score_total) >= self._settings.score_min_tradable
 
     def score(self, ctx: MarketContext) -> float:
         mom = min(1.0, abs(ctx.live.mid_change_1m_bps) / 200.0)
-        return mom * 0.65 + ctx.live.response_score * 0.35
+        base = mom * 0.65 + ctx.live.response_score * 0.35
+        if ctx.fair_value is not None:
+            base *= 0.6 + 0.4 * float(ctx.fair_value.confidence)
+        return base
 
     def build_order_intent(self, ctx: MarketContext) -> OrderIntent | None:
         tid = ctx.candidate.primary_token_id()

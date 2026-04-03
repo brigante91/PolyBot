@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.clients.clob_client import ClobWrapper
 from app.config import RunMode, Settings
@@ -16,6 +16,11 @@ from app.risk.risk_engine import RiskEngine
 from app.services.persistence_service import PersistenceService
 from app.services.portfolio_service import PortfolioService
 from app.utils.ids import stable_hash
+
+if TYPE_CHECKING:
+    from app.execution.quote_engine import QuoteEngine
+    from app.execution.reconciliation import ReconciliationService
+    from app.monitor.advanced_metrics import AdvancedMetrics
 
 log = get_logger("execution")
 
@@ -46,6 +51,10 @@ class ExecutionService:
         paper: PaperBroker,
         portfolio: PortfolioService,
         persistence: PersistenceService,
+        *,
+        quote_engine: QuoteEngine | None = None,
+        metrics: AdvancedMetrics | None = None,
+        reconciliation: ReconciliationService | None = None,
     ) -> None:
         self._settings = settings
         self._risk = risk
@@ -53,6 +62,9 @@ class ExecutionService:
         self._paper = paper
         self._portfolio = portfolio
         self._persistence = persistence
+        self._quote = quote_engine
+        self._metrics = metrics
+        self._recon = reconciliation
         self._recent_keys: dict[str, float] = {}
         self._dedup_ttl = 60.0
 
@@ -91,12 +103,34 @@ class ExecutionService:
         book: OrderBookSnapshot | None,
         bankroll_usd: float,
         confidence: float,
+        edge_net: float | None = None,
+        use_maker_quote: bool = False,
+        market_id: str = "",
+        strategy_id: str = "",
     ) -> ExecutionResult:
         self._prune_dedup()
         key = self._dedup_key(intent)
+        if self._recon:
+            self._recon.record_intent(
+                key,
+                {
+                    "market_id": market_id or intent.market_id,
+                    "strategy_id": strategy_id,
+                    "intent": intent.model_dump(),
+                    "edge_net": edge_net,
+                },
+            )
+
         if key in self._recent_keys:
             self._persistence.insert_risk_event("duplicate_order", key)
             return ExecutionResult(False, reason=RejectReason.DUPLICATE_ORDER, message="dedup")
+
+        if self._quote and (use_maker_quote or self._settings.maker_first_post_only):
+            en = edge_net if edge_net is not None else 0.03
+            adj = self._quote.prepare_intent(intent, edge_net=float(en))
+            if adj is None:
+                return ExecutionResult(False, reason=RejectReason.OTHER, message="quote_low_edge")
+            intent = adj
 
         notional = abs(intent.price * intent.size)
         is_adding_to_loser = False
@@ -136,17 +170,31 @@ class ExecutionService:
                 self._risk.state.exposure.per_market.get(intent.market_id, 0.0) + notion
             )
             self._risk.state.exposure.total += notion
+            if self._metrics:
+                self._metrics.record_order_submitted()
+                if edge_net is not None:
+                    self._metrics.record_edge_at_entry(edge_net)
+                self._metrics.record_fill(maker=True)
+            if self._recon:
+                self._recon.record_sent(key, {"orderID": oid, "id": oid, "status": "filled", "mode": "paper"})
             return ExecutionResult(True, payload=fill)
 
         if mode == RunMode.LIVE:
             if not self._settings.enable_live_trading:
                 return ExecutionResult(False, reason=RejectReason.LIVE_DISABLED)
+            post_only = bool(self._settings.maker_first_post_only)
             try:
-                resp = self._clob.create_limit_order_post(intent)
+                resp = self._clob.create_limit_order_post(intent, post_only=post_only)
                 self._risk.register_api_success()
                 self._recent_keys[key] = time.time()
                 oid = str(resp.get("orderID") or resp.get("id") or "unknown")
                 self._persistence.insert_order(oid, {**intent.model_dump(), "status": "open", "mode": "live", "resp": resp})
+                if self._metrics:
+                    self._metrics.record_order_submitted()
+                    if edge_net is not None:
+                        self._metrics.record_edge_at_entry(edge_net)
+                if self._recon:
+                    self._recon.record_sent(key, resp)
                 return ExecutionResult(True, payload={"response": resp})
             except Exception as e:
                 self._risk.register_api_error()

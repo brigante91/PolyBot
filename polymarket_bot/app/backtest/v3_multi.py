@@ -1,10 +1,9 @@
 """
-Multi-market backtest / replay (V3) — orchestrates scan → score → allocation over many series.
-
-Extend `BacktestEngine` with per-market DataFrames and shared capital; full expiry/rollover
-simulation is TODO (requires historical WS snapshots or stored books).
+Multi-market backtest entrypoints — prefer `MultiMarketBacktest` in `v4_multi_engine`.
 """
 
 from __future__ import annotations
 
-# Placeholder for V3 backtest integration tests and CSV batch runs.
+from app.backtest.v4_multi_engine import MultiMarketBacktest, MultiMarketResult
+
+__all__ = ["MultiMarketBacktest", "MultiMarketResult"]

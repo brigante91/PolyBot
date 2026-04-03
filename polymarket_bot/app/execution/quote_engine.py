@@ -31,6 +31,22 @@ class QuoteEngine:
         self._clob = clob
         self._quotes: dict[str, QuoteState] = {}
 
+    def prepare_intent(self, intent: OrderIntent, *, edge_net: float) -> OrderIntent | None:
+        """Tier-adjust limit price; return None if edge too low to quote (maker-first)."""
+        if edge_net < 0.01:
+            log.info("quote_skipped_low_edge", edge_net=edge_net)
+            return None
+        adj = 0.0
+        if edge_net > 0.05:
+            adj = 0.002
+        elif edge_net > 0.02:
+            adj = 0.001
+        new_price = max(
+            0.01,
+            min(0.99, intent.price + adj * (1 if intent.side == OrderSide.BUY else -1)),
+        )
+        return intent.model_copy(update={"price": new_price})
+
     def quote_limit(
         self,
         intent: OrderIntent,
@@ -42,16 +58,9 @@ class QuoteEngine:
         if not self._settings.enable_live_trading:
             log.info("quote_skipped_not_live", market_id=intent.market_id)
             return {}
-        # Tiered price adjustment: more edge -> slightly more aggressive (still limit)
-        adj = 0.0
-        if edge_net > 0.05:
-            adj = 0.002
-        elif edge_net > 0.02:
-            adj = 0.001
-        elif edge_net < 0.01:
-            log.info("quote_skipped_low_edge", edge_net=edge_net)
+        intent2 = self.prepare_intent(intent, edge_net=edge_net)
+        if intent2 is None:
             return {}
-        intent2 = intent.model_copy(update={"price": max(0.01, min(0.99, intent.price + adj * (1 if intent.side == OrderSide.BUY else -1)))})
         return self._clob.create_limit_order_post(intent2, post_only=po)
 
     def cancel_replace_key(self, market_key: str) -> None:
