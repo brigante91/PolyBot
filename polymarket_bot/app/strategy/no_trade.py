@@ -16,3 +16,6 @@ class NoTradeStrategy(StrategyBase):
 
     def build_order_intent(self, ctx: MarketContext) -> OrderIntent | None:
         return None
+
+    def explain(self, ctx: MarketContext) -> str:
+        return "no_trade: explicit sentinel strategy"

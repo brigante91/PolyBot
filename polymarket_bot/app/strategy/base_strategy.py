@@ -22,3 +22,9 @@ class StrategyBase(ABC):
     @abstractmethod
     def build_order_intent(self, ctx: MarketContext) -> OrderIntent | None:
         """Return limit intent or None (e.g. quote-only handled upstream)."""
+
+    def explain(self, ctx: MarketContext) -> str:
+        """Short human-readable reason for selection or skip (TUI / logs)."""
+        if not self.can_trade(ctx):
+            return f"{self.name}: cannot_trade"
+        return f"{self.name}: score={self.score(ctx):.3f}"

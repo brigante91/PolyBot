@@ -39,4 +39,7 @@ def test_selector_returns_result() -> None:
         "mean_reversion_micro",
         "momentum_micro",
         "fair_value_gap",
+        "inventory_reduction",
     )
+    assert hasattr(r, "explain_selected")
+    assert hasattr(r, "second_best_id")

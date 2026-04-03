@@ -33,6 +33,7 @@ from app.portfolio.exposure_allocator import ExposureAllocator
 from app.portfolio.portfolio_manager import PortfolioManager
 from app.portfolio.pnl_tracker import PnLTracker
 from app.portfolio.position_registry import PositionRegistry
+from app.risk.kill_switch import KillSwitch
 from app.risk.portfolio_risk_rules import check_portfolio
 from app.risk.risk_engine import RiskEngine
 from app.services.execution_service import ExecutionService
@@ -173,17 +174,36 @@ class MultiMarketOrchestrator:
         contexts = enriched
 
         tui_markets: list[dict[str, Any]] = []
+        decision_trace: list[dict[str, Any]] = []
         for ctx in contexts[:18]:
             fv = ctx.fair_value
+            scores_row = self.scorer.score(ctx.candidate, ctx.live, ctx.historical)
             sel = self.selector.select(ctx)
-            tui_markets.append(
+            row = {
+                "id": ctx.candidate.market_id,
+                "score": round(ctx.score_total, 3),
+                "strategy": sel.strategy_id,
+                "confidence": round(sel.confidence, 3),
+                "second_strategy": sel.second_best_id or "—",
+                "edge": round(fv.edge_net, 4) if fv else 0.0,
+                "fair": round(fv.fair_prob, 3) if fv else 0.0,
+                "mkt": round(fv.market_prob, 3) if fv else 0.0,
+                "explain": (sel.explain_selected or "")[:100],
+                "tradable": bool(scores_row.get("recommended", False)),
+            }
+            tui_markets.append(row)
+            decision_trace.append(
                 {
-                    "id": ctx.candidate.market_id,
-                    "score": round(ctx.score_total, 3),
+                    "market_id": ctx.candidate.market_id[:14],
                     "strategy": sel.strategy_id,
-                    "edge": round(fv.edge_net, 4) if fv else 0.0,
-                    "fair": round(fv.fair_prob, 3) if fv else 0.0,
-                    "mkt": round(fv.market_prob, 3) if fv else 0.0,
+                    "second": sel.second_best_id or "—",
+                    "conf": round(sel.confidence, 3),
+                    "edge_net": round(fv.edge_net, 4) if fv else None,
+                    "fair": round(fv.fair_prob, 3) if fv else None,
+                    "mkt": round(fv.market_prob, 3) if fv else None,
+                    "action": sel.action.value,
+                    "explain": (sel.explain_selected or "")[:90],
+                    "scorer_ok": bool(scores_row.get("recommended", False)),
                 }
             )
         lat = "—"
@@ -197,8 +217,19 @@ class MultiMarketOrchestrator:
             else:
                 ws_status = "ON"
 
+        ks = KillSwitch(self.settings).is_active()
+        exec_gate = "OK"
+        if ks:
+            exec_gate = "KILL_SWITCH"
+        elif runtime_state.paused:
+            exec_gate = "PAUSED"
+        elif runtime_state.soft_kill:
+            exec_gate = "SOFT_KILL"
+
         runtime_state.update(
             markets=tui_markets,
+            decisions=decision_trace,
+            orders=[],
             portfolio={
                 "exposure_pct": round(
                     100.0 * self.risk.state.exposure.total / max(self.settings.max_total_exposure_usd, 1.0),
@@ -215,11 +246,24 @@ class MultiMarketOrchestrator:
                 "ws": ws_status,
                 "latency_ms": lat,
                 "health": "GOOD" if self.risk.state.consecutive_api_errors < 3 else "DEGRADED",
+                "kill_switch": ks,
+                "paused": runtime_state.paused,
+                "soft_kill": runtime_state.soft_kill,
+                "execution_gate": exec_gate,
             },
             metrics=self.adv_metrics.to_dict(),
         )
 
         routed: list[RoutedIntent] = []
+        if ks or runtime_state.paused or runtime_state.soft_kill:
+            reason = "kill_switch" if ks else ("paused" if runtime_state.paused else "soft_kill")
+            runtime_state.push_debug(f"execution skipped ({reason})")
+            self.persistence.heartbeat({"orchestrator": self.metrics.to_dict(), "skipped": reason})
+            runtime_state.push_debug(
+                f"cycle scanned={self.metrics.scanned} routed=0 skipped={reason}"
+            )
+            return self.metrics
+
         for rank, ctx in enumerate(contexts, start=1):
             ctx = ctx.model_copy(update={"rank": rank})
             scores = self.scorer.score(ctx.candidate, ctx.live, ctx.historical)
@@ -336,8 +380,30 @@ class MultiMarketOrchestrator:
         results = self.router.route_batch(routed, mode=mode, bankroll_usd=bankroll)
         self.metrics.routed = len(results)
 
+        order_rows: list[dict[str, Any]] = []
         for ri, er in results:
             self.recon.record_execution(market_id=ri.market_id, strategy_id=ri.strategy_id, res=er)
+            if not er.ok:
+                lifecycle = "rejected"
+            elif mode == RunMode.DRY_RUN:
+                lifecycle = "dry_run"
+            elif mode == RunMode.PAPER:
+                lifecycle = "filled"
+            else:
+                lifecycle = "sent"
+            order_rows.append(
+                {
+                    "market_id": ri.market_id[:14],
+                    "strategy": ri.strategy_id,
+                    "side": ri.intent.side.value,
+                    "price": round(float(ri.intent.price), 4),
+                    "size": round(float(ri.intent.size), 4),
+                    "post_only": bool(self.settings.maker_first_post_only),
+                    "ok": er.ok,
+                    "reason": er.reason.value if hasattr(er, "reason") else "",
+                    "lifecycle": lifecycle,
+                }
+            )
             if er.ok and mode != RunMode.DRY_RUN:
                 self.risk.state.open_position_count = min(
                     self.settings.max_concurrent_positions,
@@ -350,7 +416,7 @@ class MultiMarketOrchestrator:
             self.metrics.no_trade,
             max(1, self.metrics.no_trade + self.metrics.routed + self.metrics.rejected_risk),
         )
-        runtime_state.update(metrics=self.adv_metrics.to_dict())
+        runtime_state.update(orders=order_rows, metrics=self.adv_metrics.to_dict())
 
         self.persistence.heartbeat({"orchestrator": self.metrics.to_dict()})
         runtime_state.push_debug(

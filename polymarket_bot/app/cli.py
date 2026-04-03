@@ -26,6 +26,50 @@ app = typer.Typer(add_completion=False, no_args_is_help=True)
 log = get_logger("cli")
 
 
+@app.command("check-env")
+def check_env_cmd() -> None:
+    """Validate local install, paths, and optional deps (no network)."""
+    from app.cli_health import run_check_env
+
+    raise typer.Exit(run_check_env())
+
+
+@app.command("doctor")
+def doctor_cmd() -> None:
+    """Smoke test: package import, data dir, Gamma/CLOB reachability (public HTTP)."""
+    from app.cli_health import run_doctor
+
+    raise typer.Exit(run_doctor())
+
+
+@app.command("replay")
+def replay_cmd(
+    path: Optional[str] = typer.Option(None, "--path", help="Session recording (future)"),
+) -> None:
+    """Offline replay from recorded session — see docs/REPLAY_AND_BACKTEST.md."""
+    rprint("[yellow]replay: session recorder not wired yet; see docs/REPLAY_AND_BACKTEST.md[/yellow]")
+    _ = path
+    raise typer.Exit(0)
+
+
+@app.command("backfill-history")
+def backfill_history_cmd() -> None:
+    """Backfill historical snapshots for closed markets — stub."""
+    rprint("[yellow]backfill-history: stub — implement with app.data.recorder when ready[/yellow]")
+    raise typer.Exit(0)
+
+
+@app.command("flatten-all")
+def flatten_all_cmd() -> None:
+    """Emergency flatten — requires live trading + future position-aware cancels."""
+    settings = load_settings()
+    if not settings.enable_live_trading:
+        rprint("[yellow]flatten-all: enable ENABLE_LIVE_TRADING and implement position flatten[/yellow]")
+        raise typer.Exit(1)
+    rprint("[yellow]flatten-all: not fully implemented — use cancel-all + manual close[/yellow]")
+    raise typer.Exit(1)
+
+
 @app.command("tui")
 def tui_cmd() -> None:
     """Terminal UI (textual) — markets, portfolio, system, debug."""

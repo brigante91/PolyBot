@@ -4,6 +4,18 @@ Python **3.11+** toolkit for **research and automation** on [Polymarket](https:/
 
 This software does **not** guarantee profits. It favours **operational safety**, **observability**, and **selective trading** (“tradare meglio, non di più”).
 
+### Production-ready checklist (V4 FINAL target)
+
+| Criterion | How |
+|-----------|-----|
+| Install | `uv pip install -e ".[dev]"` or `pip install -e ".[dev]"` from repo root |
+| Tests | `pytest -q` — no live API keys required |
+| Health | `polybot doctor` / `polybot check-env` |
+| Run | `polybot run-multi --mode paper` |
+| TUI | `polybot-tui` — markets, **decision trace**, **order blotter**, metrics, portfolio, system (kill/pause/soft-kill), debug |
+| Live | Same code path — set `MODE=live`, `ENABLE_LIVE_TRADING=true`, credentials and risk in `.env` |
+| Safety | Env/file **kill switch**, TUI **pause** (`p`) and **soft kill** (`k`) skip routing; limit orders + post-only defaults |
+
 ---
 
 ## What the bot does
@@ -48,7 +60,8 @@ polymarket_bot/app/
 ├── risk/              # risk_engine, rules, kill_switch
 ├── services/          # execution, persistence, legacy trading_service
 ├── state/             # runtime_state (TUI / cross-thread snapshot)
-├── strategy/          # selector + passive_mm, momentum, mean_reversion, fair_value_gap, no_trade
+├── realtime/          # state_engine (thread-safe snapshots for WS-fed state)
+├── strategy/          # selector + passive_mm, momentum, mean_reversion, fair_value_gap, inventory_reduction, no_trade
 ├── strategies/        # legacy backtest strategies (get_strategy)
 ├── ui/                # textual TUI + views (market, trades, portfolio, system, debug, metrics)
 └── …
@@ -93,6 +106,18 @@ PYTHONPATH=polymarket_bot python -m app.cli --help
 
 ---
 
+## First run (operational checklist)
+
+1. `uv pip install -e ".[dev]"` and `cp .env.example .env`
+2. `polybot check-env` — local imports, data dir, optional deps (**no network**)
+3. `polybot doctor` — same + public **Gamma/CLOB HTTP** reachability
+4. `polybot run-multi --mode paper --max-cycles 1`
+5. Optional: second terminal → `polybot-tui` while `run-multi` is running
+
+Full walkthrough: **[docs/FIRST_RUN.md](docs/FIRST_RUN.md)** · TUI: **[docs/TUI_GUIDE.md](docs/TUI_GUIDE.md)** · Architecture: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** · Risk: **[docs/RISK_MODEL.md](docs/RISK_MODEL.md)** · Replay/backtest: **[docs/REPLAY_AND_BACKTEST.md](docs/REPLAY_AND_BACKTEST.md)**
+
+---
+
 ## Configuration
 
 Copy **`.env.example`** → **`.env`**. Never commit secrets.
@@ -134,8 +159,13 @@ python -m app.cli --help
 
 | Command | Description |
 |---------|-------------|
+| **`check-env`** | Validate install, paths, Textual/websockets (**no network**) |
+| **`doctor`** | `check-env` + public Gamma/CLOB HTTP smoke tests |
 | **`run-multi`** | Multi-market loop: `--mode paper\|dry_run\|live`, optional `--max-cycles N` |
 | **`tui`** | Terminal UI (run **`run-multi`** in another terminal to feed live state) |
+| **`replay`** | Stub — offline session replay (see docs) |
+| **`backfill-history`** | Stub — historical backfill job |
+| **`flatten-all`** | Stub — emergency flatten (requires live + future implementation) |
 | **`discover-markets`** | Sample Gamma markets (`--limit`) |
 | **`run`** | Legacy single-market loop via `TradingService` (`--strategy`, `--max-iter`) |
 | **`backtest`** | Single-series bar backtest to CSV (`--strategy`, `--from`, `--to`, `--out`) |
